@@ -1,0 +1,15 @@
+Del paso 1 del código 
+- Poder seleccionar la localidad a trabajar de acuerdo al contenido que tenga esa capa
+
+Del paso 2 del código 
+-Poder seleccionar o cambiar las fechas de inicio y final para Definir los Parámetros de Búsqueda de Imágenes
+
+- se mantiene el paso 3 (Variables satelitales fijas)
+- se mantiene el paso 4
+- se mantiene el paso 5
+- se mantiene el paso 6
+
+Del paso 7 del código 
+-Poder seleccionar o cambiar las fechas en temporadas de seca y lluvia
+
+(Idea del proyecto: Una vez mostrado los datos con el mapa generado y la localidad mostrada, por medio de graficas hacer comparaciones con las temporadas de lluvia y seca principalmente en Teapa y compararlas con los demás, medir su nivel de ICU en cada localidad mediante el mapa)
