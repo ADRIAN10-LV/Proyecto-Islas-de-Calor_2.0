@@ -14,6 +14,7 @@ import streamlit as st
 try:
     import folium
     from streamlit_folium import st_folium
+
     FOLIUM_AVAILABLE = True
 except Exception:
     FOLIUM_AVAILABLE = False
@@ -21,14 +22,18 @@ except Exception:
 # Importar módulos utilitarios
 try:
     import ee
-    from app.utils.gee_utils import init_gee, get_area_teapa
-    from app.utils.ndvi import calcular_ndvi
-    from app.utils.lst import calcular_lst
+
+    # from app.utils.gee_utils import init_gee, get_area_teapa
+    # from app.utils.ndvi import calcular_ndvi
+    # from app.utils.lst import calcular_lst
+    ee.Authenticate()
+    ee.Initialize(project="islas-calor-teapa-475319")
+    print(ee.String("Hello from the Earth Engine servers!").getInfo())
     GEE_AVAILABLE = True
-    init_gee()
+    # init_gee()
 except Exception as e:
     GEE_AVAILABLE = False
-    print("⚠️ No se pudo inicializar GEE:", e)
+    print("⚠️ No se pudo inicializar GEE: ", e)
 
 # ------------------------- CONFIG BÁSICA ------------------------- #
 st.set_page_config(
@@ -92,8 +97,7 @@ with st.sidebar:
 
     st.markdown("### Área de estudio (AOI)")
     aoi_option = st.selectbox(
-        "Definir AOI",
-        ["Teapa (predeterminado)", "Subir GeoJSON"]
+        "Definir AOI", ["Teapa (predeterminado)", "Tacotalpa", "Subir GeoJSON"]
     )
 
     uploaded_geojson = None
@@ -117,6 +121,7 @@ with st.sidebar:
         st.info("No se detectó GEE. Instala y autentica con 'earthengine-api'.")
 
 # ------------------------- UTILIDADES ------------------------- #
+
 
 def build_base_map(center=TEAPA_CENTER, zoom_start=12):
     """Crea un mapa base Folium centrado en Teapa."""
@@ -153,24 +158,28 @@ def show_map_panel():
 
         if "NDVI" in metricas:
             ndvi_layer = calcular_ndvi(collection, geometry, start_date, end_date)
-            mapid = ndvi_layer.getMapId({"min": 0, "max": 1, "palette": ["red", "yellow", "green"]})
+            mapid = ndvi_layer.getMapId(
+                {"min": 0, "max": 1, "palette": ["red", "yellow", "green"]}
+            )
             folium.raster_layers.TileLayer(
                 tiles=mapid["tile_fetcher"].url_format,
                 attr="Google Earth Engine",
                 name="NDVI",
                 overlay=True,
-                control=True
+                control=True,
             ).add_to(m)
 
         if "LST" in metricas:
             lst_layer = calcular_lst(collection, geometry, start_date, end_date)
-            mapid = lst_layer.getMapId({"min": 20, "max": 40, "palette": ["blue", "yellow", "red"]})
+            mapid = lst_layer.getMapId(
+                {"min": 20, "max": 40, "palette": ["blue", "yellow", "red"]}
+            )
             folium.raster_layers.TileLayer(
                 tiles=mapid["tile_fetcher"].url_format,
                 attr="Google Earth Engine",
                 name="LST (°C)",
                 overlay=True,
-                control=True
+                control=True,
             ).add_to(m)
 
         folium.LayerControl().add_to(m)
@@ -180,6 +189,7 @@ def show_map_panel():
 
     out = st_folium(m, width=None, height=600)
     st.session_state.last_map = out
+
 
 # ------------------------- ROUTER ------------------------- #
 if section == "Mapas":
