@@ -40,3 +40,24 @@
         #         overlay=True,
         #         control=True,
         #     ).add_to(m)
+
+
+
+# dem = ee.Image("USGS/SRTMGL1_003")
+
+    # vis_params = {
+    # "min": 0,
+    # "max": 4000,
+    # "palette": ["006633", "E5FFCC", "662A00", "D8D8D8", "F5F5F5"]}
+
+    # Create a map object.
+    # m = geemap.Map(center=[40,-100], zoom=4)
+    # m = folium.Map(location=center, zoom_start=zoom_start, control_scale=True)
+
+    # Add the elevation model to the map object.
+    # m.add_ee_layer(dem.updateMask(dem.gt(0)), vis_params, "DEM")
+
+    # Display the map.
+    # display(m)
+
+    # Create a folium map object.

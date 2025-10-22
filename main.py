@@ -76,17 +76,19 @@ BASEMAPS = {
     ),
 }
 
-GEE_AVAILABLE = False
-
-
 def connect_with_gee():
     # Importar módulos utilitarios
-    if 'gee_available' not in st.session_state or st.session_state.gee_available is False:
+    if (
+        "gee_available" not in st.session_state
+        or st.session_state.gee_available is False
+    ):
         try:
             ee.Authenticate()
             ee.Initialize(project="islas-calor-teapa-475319")
+            st.toast("Google Earth Engine inicializado")
             st.session_state.gee_available = True
         except Exception as e:
+            st.toast("No se pudo inicializar Google Earth Engine")
             st.session_state.gee_available = False
             return False
     return True
@@ -149,12 +151,23 @@ def create_map(center=COORDENADAS_INICIALES, zoom_start=8):
         st.toast("Folium no se encuentra instalado")
         return None
 
-    connect_with_gee()
-
     map = folium.Map(COORDENADAS_INICIALES, zoom_start=zoom_start, height=500)
 
+    return map
+    
+
+# Método para mostrar el panel del mapa
+def show_map_panel():
+    st.markdown("Islas de calor por localidades de Tabasco")
+    st.caption("Visualización de NDVI y LST desde Google Earth Engine.")
+
+    map = create_map()
+    if map == None:
+        return
+
+    connect_with_gee()
+
     if st.session_state.gee_available:
-        st.toast("Google Earth Engine inicializado")
         # # Add custom BASEMAPS
         # BASEMAPS["Google Maps"].add_to(map)
         # BASEMAPS["Google Satellite Hybrid"].add_to(map)
@@ -193,36 +206,6 @@ def create_map(center=COORDENADAS_INICIALES, zoom_start=8):
 
     else:
         st.toast("No hay conexión con Google Earth Engine, mostrando solo mapa base")
-
-    return map
-    # dem = ee.Image("USGS/SRTMGL1_003")
-
-    # vis_params = {
-    # "min": 0,
-    # "max": 4000,
-    # "palette": ["006633", "E5FFCC", "662A00", "D8D8D8", "F5F5F5"]}
-
-    # Create a map object.
-    # m = geemap.Map(center=[40,-100], zoom=4)
-    # m = folium.Map(location=center, zoom_start=zoom_start, control_scale=True)
-
-    # Add the elevation model to the map object.
-    # m.add_ee_layer(dem.updateMask(dem.gt(0)), vis_params, "DEM")
-
-    # Display the map.
-    # display(m)
-
-    # Create a folium map object.
-
-
-# Método para mostrar el panel del mapa
-def show_map_panel():
-    st.markdown("Islas de calor por localidades de Tabasco")
-    st.caption("Visualización de NDVI y LST desde Google Earth Engine.")
-
-    map = create_map()
-    if map == None:
-        return
 
     st_folium(map, width=None, height=600)
 
