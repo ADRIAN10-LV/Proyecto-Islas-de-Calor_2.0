@@ -1,0 +1,5 @@
+https://hasencios.github.io/GEE_BASICO_SENAMHI/03-load-imagery/
+
+https://gee-community-catalog.org/projects/geoboundary/#data-preprocessing-for-gee
+
+https://tutorials.geemap.org/FeatureCollection/vector_styling/

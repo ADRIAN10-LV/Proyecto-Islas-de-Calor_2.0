@@ -23,14 +23,19 @@ for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
 
 # Estado inicial
 if "aoi" not in st.session_state:
-    st.session_state.aoi = None  # Área de estudio (GeoJSON/Fiona/coords)
+    st.session_state.aoi = "Teapa"  # Área de estudio (GeoJSON/Fiona/coords)
 if "date_range" not in st.session_state:
-    st.session_state.date_range = (dt.date(2014, 1, 1), dt.datetime.now())
-if "last_map" not in st.session_state:
-    st.session_state.last_map = None
+    st.session_state.date_range = (dt.date(2024, 1, 1), dt.datetime.now())
+if "gee_available" not in st.session_state:
+    st.session_state.gee_available = False
+if "window" not in st.session_state:
+    st.session_state.window = "Mapas"
 
 # Coordenadas de referencia (aprox) para Teapa, Tabasco
 COORDENADAS_INICIALES = (17.558567, -92.948714)  # (lat, lon)
+
+# Variable para el máximo de nubes
+MAX_NUBES = 30
 
 # Mapas para agregar a folium
 BASEMAPS = {
@@ -75,16 +80,16 @@ GEE_AVAILABLE = False
 
 
 def connect_with_gee():
-    global GEE_AVAILABLE
     # Importar módulos utilitarios
-    try:
-        ee.Authenticate()
-        ee.Initialize(project="islas-calor-teapa-475319")
-        st.toast("Google Earth Engine inicializado ✅")
-        GEE_AVAILABLE = True
-    except Exception as e:
-        GEE_AVAILABLE = False
-        st.toast("No se pudo inicializar GEE:", e)
+    if 'gee_available' not in st.session_state or st.session_state.gee_available is False:
+        try:
+            ee.Authenticate()
+            ee.Initialize(project="islas-calor-teapa-475319")
+            st.session_state.gee_available = True
+        except Exception as e:
+            st.session_state.gee_available = False
+            return False
+    return True
 
 
 # Método para agregar las imágenes de GEE a los mapas de folium
@@ -134,129 +139,92 @@ def add_ee_layer(self, ee_object, vis_params, name):
 
 folium.Map.add_ee_layer = add_ee_layer
 
+
 # Método para generar el mapa base
-def build_base_map(center=COORDENADAS_INICIALES, zoom_start=14):
+def create_map(center=COORDENADAS_INICIALES, zoom_start=8):
     # Add EE drawing method to folium.
-    """Crea un mapa base Folium centrado en Teapa."""
+    # """Crea un mapa base Folium centrado en Teapa."""
 
     if "folium" and "streamlit_folium" not in sys.modules:
         st.toast("Folium no se encuentra instalado")
         return None
 
+    connect_with_gee()
+
     map = folium.Map(COORDENADAS_INICIALES, zoom_start=zoom_start, height=500)
+
+    if st.session_state.gee_available:
+        st.toast("Google Earth Engine inicializado")
+        # # Add custom BASEMAPS
+        # BASEMAPS["Google Maps"].add_to(map)
+        # BASEMAPS["Google Satellite Hybrid"].add_to(map)
+
+        # CGAZ_ADM0 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM0");
+        # CGAZ_ADM1 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM1");
+        CGAZ_ADM2 = ee.FeatureCollection(
+            "projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM2"
+        )
+
+        boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
+
+        filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.aoi))
+
+        style = {
+            "color": "0000ffff",
+            "width": 2,
+            "lineType": "solid",
+            "fillColor": "00000080",
+        }
+
+        # map.add_ee_layer(filtered.style(**style), {}, "ADM2 Boundaries")
+
+        map.add_ee_layer(filtered.style(**style), {}, st.session_state.aoi)
+
+        # roi = ee.Geometry.Point(-122.4488, 37.7589)
+
+        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[0])))
+        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[1])))
+
+        # collection = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate((dt.datetime.fromisoformat(str(st.session_state.date_range[0]))), dt.datetime.fromisoformat(str(st.session_state.date_range[1]))).filterBounds(roi)
+
+        #   .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", MAX_NUBES)).size().getInfo())
+
+        folium.LayerControl().add_to(map)
+
+    else:
+        st.toast("No hay conexión con Google Earth Engine, mostrando solo mapa base")
+
     return map
-    # dem = ee.Image('USGS/SRTMGL1_003')
+    # dem = ee.Image("USGS/SRTMGL1_003")
 
     # vis_params = {
-    # 'min': 0,
-    # 'max': 4000,
-    # 'palette': ['006633', 'E5FFCC', '662A00', 'D8D8D8', 'F5F5F5']}
+    # "min": 0,
+    # "max": 4000,
+    # "palette": ["006633", "E5FFCC", "662A00", "D8D8D8", "F5F5F5"]}
 
     # Create a map object.
     # m = geemap.Map(center=[40,-100], zoom=4)
     # m = folium.Map(location=center, zoom_start=zoom_start, control_scale=True)
 
     # Add the elevation model to the map object.
-    # m.add_ee_layer(dem.updateMask(dem.gt(0)), vis_params, 'DEM')
+    # m.add_ee_layer(dem.updateMask(dem.gt(0)), vis_params, "DEM")
 
     # Display the map.
     # display(m)
 
     # Create a folium map object.
 
+
 # Método para mostrar el panel del mapa
 def show_map_panel():
     st.markdown("Islas de calor por localidades de Tabasco")
     st.caption("Visualización de NDVI y LST desde Google Earth Engine.")
 
-    map = build_base_map()
+    map = create_map()
     if map == None:
         return
 
-    connect_with_gee()
-
-    if GEE_AVAILABLE:
-        # Set visualization parameters.
-        dem = ee.Image("USGS/SRTMGL1_003")
-
-        # Set visualization parameters.
-        vis_params = {
-            "min": 0,
-            "max": 4000,
-            "palette": ["006633", "E5FFCC", "662A00", "D8D8D8", "F5F5F5"],
-        }
-
-        # Add custom BASEMAPS
-        BASEMAPS["Google Maps"].add_to(map)
-        BASEMAPS["Google Satellite Hybrid"].add_to(map)
-
-        # Add the elevation model to the map object.
-        map.add_ee_layer(dem.updateMask(dem.gt(0)), vis_params, "DEM")
-
-        # jan_2023_climate = (
-        #     ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
-        #     .filterDate("2023-01", "2023-02")
-        #     .first()
-        # )
-        # # jan_2023_climate
-
-        # m = geemap.Map(center=[30, 0], zoom=2)
-
-        # vis_params = {
-        #     "bands": ["temperature_2m"],
-        #     "min": 229,
-        #     "max": 304,
-        #     "palette": "inferno",
-        # }
-        # m.add_layer(jan_2023_climate, vis_params, "Temperature (K)")
-
-        # Geometría del área de estudio
-        # if st.session_state.aoi == "TEAPA_DEFAULT" or st.session_state.aoi is None:
-        #     geometry = get_area_teapa()
-        # else:
-        #     # En el futuro: parsear GeoJSON cargado
-        #     geometry = get_area_teapa()
-
-        # start_date, end_date = st.session_state.date_range
-        # start_date = str(start_date)
-        # end_date = str(end_date)
-
-        # # Colección Landsat 8 SR
-        # collection = "LANDSAT/LC08/C02/T1_L2"
-
-        # if "NDVI" in metricas:
-        #     ndvi_layer = calcular_ndvi(collection, geometry, start_date, end_date)
-        #     mapid = ndvi_layer.getMapId(
-        #         {"min": 0, "max": 1, "palette": ["red", "yellow", "green"]}
-        #     )
-        #     folium.raster_layers.TileLayer(
-        #         tiles=mapid["tile_fetcher"].url_format,
-        #         attr="Google Earth Engine",
-        #         name="NDVI",
-        #         overlay=True,
-        #         control=True,
-        #     ).add_to(m)
-
-        # if "LST" in metricas:
-        #     lst_layer = calcular_lst(collection, geometry, start_date, end_date)
-        #     mapid = lst_layer.getMapId(
-        #         {"min": 20, "max": 40, "palette": ["blue", "yellow", "red"]}
-        #     )
-        #     folium.raster_layers.TileLayer(
-        #         tiles=mapid["tile_fetcher"].url_format,
-        #         attr="Google Earth Engine",
-        #         name="LST (°C)",
-        #         overlay=True,
-        #         control=True,
-        #     ).add_to(m)
-
-        folium.LayerControl().add_to(map)
-
-    else:
-        st.warning("No hay conexión con GEE. Mostrando solo mapa base.")
-
-    out = st_folium(map, width=None, height=600)
-    st.session_state.last_map = out
+    st_folium(map, width=None, height=600)
 
 
 # Configuración de streamlit
@@ -278,6 +246,7 @@ with st.sidebar:
         ["Mapas", "Gráficas", "Reportes", "Acerca de"],
         index=0,
     )
+    st.session_state.window = section
 
     # Filtros globales
     st.markdown("Filtros")
@@ -289,34 +258,43 @@ with st.sidebar:
         max_value=max_date,
         help="Periodo de análisis",
     )
+    # st.write(dt.datetime.fromisoformat(str(date_range[0])))
     if isinstance(date_range, tuple) and len(date_range) == 2:
         st.session_state.date_range = date_range
 
     st.markdown("Área de estudio (AOI)")
-    aoi_option = st.selectbox("Definir AOI", ["Teapa", "Tacotalpa", "Subir GeoJSON"])
+    st.session_state.aoi = st.selectbox("Definir AOI", ["Teapa", "Tacotalpa", "Centro"])
 
-    uploaded_geojson = None
-    if aoi_option == "Subir GeoJSON":
-        uploaded_geojson = st.file_uploader(
-            "Carga un archivo GeoJSON",
-            type=["geojson", "json"],
-            help="El sistema intentará usar esta geometría como AOI",
-        )
+    # if st.button("do something"):
+    #     # do something
+    #     st.session_state["aoi"] = not st.session_state["aoi"]
+    #     st.rerun()
 
-    if st.button("Aplicar AOI/Filtros"):
-        st.session_state.aoi = uploaded_geojson if uploaded_geojson else "Teapa"
-        st.toast("Filtros aplicados", icon="✅")
+    # uploaded_geojson = None
+    # if aoi_option == "Subir GeoJSON":
+    #     uploaded_geojson = st.file_uploader(
+    #         "Carga un archivo GeoJSON",
+    #         type=["geojson", "json"],
+    #         help="El sistema intentará usar esta geometría como AOI",
+    #     )
 
-    metricas = st.multiselect(
-        "Indicadores",
-        ["NDVI", "LST"],
-        default=["LST"],
-        help="Selecciona qué indicadores calcular/visualizar",
-    )
+    # if st.button("Aplicar AOI/Filtros"):
+    #     st.session_state.aoi = uploaded_geojson if uploaded_geojson else "Teapa"
+    #     st.toast("Filtros aplicados", icon="✅")
+
+    # if st.button("Generar"):
+    #     show_map_panel()
+
+    # metricas = st.multiselect(
+    #     "Indicadores",
+    #     ["NDVI", "LST"],
+    #     default=["LST"],
+    #     help="Selecciona qué indicadores calcular/visualizar",
+    # )
 
 
 # Router de las ventanas
-match section:
+match st.session_state.window:
     case "Mapas":
         show_map_panel()
     case "Gráficas":
