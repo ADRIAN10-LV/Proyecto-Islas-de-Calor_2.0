@@ -1,0 +1,13 @@
+https://hasencios.github.io/GEE_BASICO_SENAMHI/03-load-imagery/
+
+https://gee-community-catalog.org/projects/geoboundary/#data-preprocessing-for-gee
+
+https://tutorials.geemap.org/FeatureCollection/vector_styling/
+
+https://code.earthengine.google.com/?scriptPath=users%2Fsat-io%2Fawesome-gee-catalog-examples%3Apopulation-socioeconomics%2FGEOBOUNDARIES
+
+https://code.earthengine.google.com/?scriptPath=Examples%3ADatasets%2FWM%2FWM_geoLab_geoBoundaries_600_ADM2&hl=es-419
+
+https://colab.research.google.com/github/giswqs/qgis-earthengine-examples/blob/master/Folium/ee-api-folium-setup.ipynb?authuser=2#scrollTo=zbDdjUZlzUdS
+
+https://colab.research.google.com/github/google/earthengine-community/blob/master/guides/linked/ee-api-colab-setup.ipynb?hl=es-419&authuser=2#scrollTo=VIiyf6azf4mU
