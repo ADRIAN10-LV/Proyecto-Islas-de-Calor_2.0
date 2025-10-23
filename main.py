@@ -84,7 +84,7 @@ def connect_with_gee():
     ):
         try:
             ee.Authenticate()
-            ee.Initialize(project="islas-calor-teapa-475319")
+            ee.Initialize(project="islas-de-calor-471216")
             st.toast("Google Earth Engine inicializado")
             st.session_state.gee_available = True
         except Exception as e:
@@ -159,7 +159,7 @@ def create_map(center=COORDENADAS_INICIALES, zoom_start=8):
 # Método para mostrar el panel del mapa
 def show_map_panel():
     st.markdown("Islas de calor por localidades de Tabasco")
-    st.caption("Visualización de NDVI y LST desde Google Earth Engine.")
+    st.caption("Visualización de LST desde Google Earth Engine.")
 
     map = create_map()
     if map == None:
@@ -246,7 +246,10 @@ with st.sidebar:
         st.session_state.date_range = date_range
 
     st.markdown("Área de estudio (AOI)")
-    st.session_state.aoi = st.selectbox("Definir AOI", ["Teapa", "Tacotalpa", "Centro"])
+    st.session_state.aoi = st.selectbox("Definir AOI", ["Balancán", "Cárdenas", "Centla", "Centro", "Comalcalco", 
+                                                        "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
+                                                        "Jalpa de Méndez",  "Jonuta", "Macuspana", "Nacajuca", "Paraíso", "Tacotalpa",
+                                                        "Teapa", "Tenosique",])
 
     # if st.button("do something"):
     #     # do something
