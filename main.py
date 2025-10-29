@@ -12,6 +12,10 @@ import folium
 from folium import plugins
 from streamlit_folium import st_folium
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Cargamos el archivo de variables de entorno
+load_dotenv()
 
 # Carpetas de trabajo
 BASE_DIR = Path(__file__).parent
@@ -23,7 +27,11 @@ for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
 
 # Estado inicial
 if "aoi" not in st.session_state:
-    st.session_state.aoi = "Teapa"  # Área de estudio (GeoJSON/Fiona/coords)
+    st.session_state.aoi = "Teapa"  # Área de estudio
+if "latitude" not in st.session_state:
+    st.session_state.latitude = -92.948714
+if "longitude" not in st.session_state:
+    st.session_state.longitude = 17.558567
 if "date_range" not in st.session_state:
     st.session_state.date_range = (dt.date(2024, 1, 1), dt.datetime.now())
 if "gee_available" not in st.session_state:
@@ -32,7 +40,7 @@ if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
 # Coordenadas de referencia (aprox) para Teapa, Tabasco
-COORDENADAS_INICIALES = (17.558567, -92.948714)  # (lat, lon)
+COORDENADAS_INICIALES = (st.session_state.latitude, st.session_state.longitude)  # (lat, lon)
 
 # Variable para el máximo de nubes
 MAX_NUBES = 30
@@ -84,7 +92,7 @@ def connect_with_gee():
     ):
         try:
             ee.Authenticate()
-            ee.Initialize(project="islas-de-calor-471216")
+            ee.Initialize(project=os.getenv("GEE_PROJECT"))
             st.toast("Google Earth Engine inicializado")
             st.session_state.gee_available = True
         except Exception as e:
@@ -143,7 +151,7 @@ folium.Map.add_ee_layer = add_ee_layer
 
 
 # Método para generar el mapa base
-def create_map(center=COORDENADAS_INICIALES, zoom_start=8):
+def create_map(center=COORDENADAS_INICIALES, zoom_start=13):
     # Add EE drawing method to folium.
     # """Crea un mapa base Folium centrado en Teapa."""
 
@@ -174,13 +182,27 @@ def show_map_panel():
 
         # CGAZ_ADM0 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM0");
         # CGAZ_ADM1 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM1");
-        CGAZ_ADM2 = ee.FeatureCollection(
-            "projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM2"
-        )
+        # CGAZ_ADM2 = ee.FeatureCollection(
+        #     "projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM2"
+        # )
 
-        boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
+        localities = ee.FeatureCollection("projects/islas-calor-teapa-475319/assets/localidades_urbanas")
+        
+        filtered = localities.filter(ee.Filter.eq("NOMGEO", st.session_state.aoi))
 
-        filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.aoi))
+        locality_geometry = filtered.geometry().centroid().getInfo()['coordinates']
+
+        st.session_state.latitude = locality_geometry[-1]
+        st.session_state.longitude = locality_geometry[0]
+
+        # st.write(locality_geometry[-1])
+        # st.write(locality_geometry[0])
+
+        # st.write(localities)
+
+        # boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
+
+        # filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.aoi))
 
         style = {
             "color": "0000ffff",
@@ -246,10 +268,10 @@ with st.sidebar:
         st.session_state.date_range = date_range
 
     st.markdown("Área de estudio (AOI)")
-    st.session_state.aoi = st.selectbox("Definir AOI", ["Balancán", "Cárdenas", "Centla", "Centro", "Comalcalco", 
+    st.session_state.aoi = st.selectbox("Definir AOI", ["Balancán", "Cárdenas", "Frontera", "Villahermosa", "Comalcalco", 
                                                         "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
                                                         "Jalpa de Méndez",  "Jonuta", "Macuspana", "Nacajuca", "Paraíso", "Tacotalpa",
-                                                        "Teapa", "Tenosique",])
+                                                        "Teapa", "Tenosique de Pino Suárez",])
 
     # if st.button("do something"):
     #     # do something

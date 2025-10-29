@@ -8,6 +8,7 @@ dependencies = [
     "earthengine-api>=1.6.12",
     "folium>=0.20.0",
     "geemap>=0.36.4",
+    "python-dotenv>=1.2.1",
     "streamlit>=1.50.0",
     "streamlit-folium>=0.25.3",
 ]
