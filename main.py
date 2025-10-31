@@ -29,11 +29,11 @@ for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
 if "locality" not in st.session_state:
     st.session_state.locality = "Teapa"  # Área de estudio
 if "coordinates" not in st.session_state:
-    st.session_state.coordinates = (-92.948714, 17.558567)
-if "latitude" not in st.session_state:
-    st.session_state.latitude = -92.948714
-if "longitude" not in st.session_state:
-    st.session_state.longitude = 17.558567
+    st.session_state.coordinates = (17.558567, -92.948714)
+# if "latitude" not in st.session_state:
+#     st.session_state.latitude = -92.948714
+# if "longitude" not in st.session_state:
+#     st.session_state.longitude = 17.558567
 if "date_range" not in st.session_state:
     st.session_state.date_range = (dt.date(2024, 1, 1), dt.datetime.now())
 if "gee_available" not in st.session_state:
@@ -42,7 +42,7 @@ if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
 # Coordenadas de referencia (aprox) para Teapa, Tabasco
-COORDENADAS_INICIALES = st.session_state.coordinates  # (lat, lon)
+# COORDENADAS_INICIALES = st.session_state.coordinates  # (lat, lon)
 
 # Variable para el máximo de nubes
 MAX_NUBES = 30
@@ -175,7 +175,7 @@ folium.Map.add_ee_layer = add_ee_layer
 
 
 # Método para generar el mapa base
-def create_map(center=COORDENADAS_INICIALES, zoom_start=13):
+def create_map(center=st.session_state.coordinates, zoom_start=13):
     # Add EE drawing method to folium.
     # """Crea un mapa base Folium centrado en Teapa."""
 
@@ -183,9 +183,22 @@ def create_map(center=COORDENADAS_INICIALES, zoom_start=13):
         st.toast("Folium no se encuentra instalado")
         return None
 
-    map = folium.Map(COORDENADAS_INICIALES, zoom_start=zoom_start, height=500)
+    map = folium.Map(st.session_state.coordinates, zoom_start=zoom_start, height=500)
 
     return map
+
+
+def set_coordinates():
+    roi = (
+        ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+        .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+        .geometry()
+    )
+
+    st.session_state.coordinates = (
+        roi.centroid().coordinates().getInfo()[-1],
+        roi.centroid().coordinates().getInfo()[0],
+    )
 
 
 # Método para mostrar el panel del mapa
@@ -201,7 +214,7 @@ def show_map_panel():
 
     if st.session_state.gee_available:
         # # Add custom BASEMAPS
-        BASEMAPS["Google Maps"].add_to(map)
+        # BASEMAPS["Google Maps"].add_to(map)
         BASEMAPS["Google Satellite Hybrid"].add_to(map)
 
         # CGAZ_ADM0 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM0");
@@ -210,63 +223,44 @@ def show_map_panel():
         #     "projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM2"
         # )
 
-        roi = ee.FeatureCollection(
-            "projects/islas-calor-teapa-475319/assets/localidades_urbanas"
-        ).filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
-
-        roi_geometry = roi.geometry()
-
-        locality_coordinates = roi_geometry.centroid().getInfo()["coordinates"]
-
-        st.session_state.coordinates = (
-            locality_coordinates[-1],
-            locality_coordinates[0],
+        roi = (
+            ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+            .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+            .geometry()
         )
-
-        # boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
-
-        # filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.locality))
-
-        # map.add_ee_layer(filtered.style(**style), {}, "ADM2 Boundaries")
-
-        # roi = ee.Geometry.Point(-122.4488, 37.7589)
-
-        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[0])))
-        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[1])))
 
         collection = (
             ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-            # .filterBounds(roi_geometry)
             .filterDate(
                 (dt.datetime.fromisoformat(str(st.session_state.date_range[0]))),
                 dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
             )
             .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-            .map(lambda image: image.clip(roi_geometry))
+            .map(lambda image: image.clip(roi))
             .map(cloudMaskFunction)
             .map(noThermalDataFunction)
         )
 
         mosaico = collection.reduce(ee.Reducer.percentile([50]))
 
-        mosaicoRGB = (
-            ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-            .filterBounds(roi)
-            .filterDate(
-                (dt.datetime.fromisoformat(str(st.session_state.date_range[0]))),
-                dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
-            )
-            .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-            .map(cloudMaskFunction)
-            .map(applyScale)
-            .median()
-        )
+        # mosaicoRGB = (
+        #     ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+        #     .filterBounds(roi)
+        #     .filterDate(
+        #         (dt.datetime.fromisoformat(str(st.session_state.date_range[0]))),
+        #         dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
+        #     )
+        #     .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+        #     .map(cloudMaskFunction)
+        #     .map(applyScale)
+        #     .median()
+        # )
 
-        visColorVerdadero = {
-            "bands": ("SR_B4", "SR_B3", "SR_B2"),
-            "min": 0.0,
-            "max": 0.3,
-        }
+        # visColorVerdadero = {
+        #     "bands": ("SR_B4", "SR_B3", "SR_B2"),
+        #     "min": 0.0,
+        #     "max": 0.3,
+        # }
 
         # map.add_ee_layer(mosaicoRGB, visColorVerdadero, "RGB")
 
@@ -289,8 +283,6 @@ def show_map_panel():
 
         map.add_ee_layer(lstCelsius, visParamsLST, "Temperatura Superficial (°C) p50")
 
-        # st.write(mosaicoRGB.getInfo())
-
         percentilUHI = 90
         minPixParche = 3
 
@@ -304,8 +296,6 @@ def show_map_panel():
             bestEffort=True,
         )
 
-        # st.write(pctDict.getInfo())
-
         key = ee.String("LST_p").cat(ee.Number(percentilUHI).format())
 
         umbral = ee.Algorithms.If(
@@ -315,8 +305,6 @@ def show_map_panel():
         )
 
         n_umbral = ee.Number(umbral)
-
-        # st.write(n_umbral.getInfo())
 
         uhiMask = lstForThreshold.gte(n_umbral)
 
@@ -405,6 +393,8 @@ with st.sidebar:
         ],
     )
 
+    set_coordinates()
+
     min_date, max_date = dt.date(2014, 1, 1), dt.datetime.now()
     date_range = st.date_input(
         "Rango de fechas",
@@ -413,7 +403,6 @@ with st.sidebar:
         max_value=max_date,
         help="Periodo de análisis",
     )
-    # st.write(dt.datetime.fromisoformat(str(date_range[0])))
     if isinstance(date_range, tuple) and len(date_range) == 2:
         st.session_state.date_range = date_range
 
