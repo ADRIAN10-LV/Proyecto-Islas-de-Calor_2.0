@@ -61,3 +61,9 @@
     # display(m)
 
     # Create a folium map object.
+
+# boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
+
+# filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.locality))
+
+# map.add_ee_layer(filtered.style(**style), {}, "ADM2 Boundaries")

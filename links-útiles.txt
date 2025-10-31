@@ -11,3 +11,5 @@ https://code.earthengine.google.com/?scriptPath=Examples%3ADatasets%2FWM%2FWM_ge
 https://colab.research.google.com/github/giswqs/qgis-earthengine-examples/blob/master/Folium/ee-api-folium-setup.ipynb?authuser=2#scrollTo=zbDdjUZlzUdS
 
 https://colab.research.google.com/github/google/earthengine-community/blob/master/guides/linked/ee-api-colab-setup.ipynb?hl=es-419&authuser=2#scrollTo=VIiyf6azf4mU
+
+https://mapshaper.org/

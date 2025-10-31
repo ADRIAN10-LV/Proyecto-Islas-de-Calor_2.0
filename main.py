@@ -26,12 +26,14 @@ for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Estado inicial
-if "aoi" not in st.session_state:
-    st.session_state.aoi = "Teapa"  # Área de estudio
-if "latitude" not in st.session_state:
-    st.session_state.latitude = -92.948714
-if "longitude" not in st.session_state:
-    st.session_state.longitude = 17.558567
+if "locality" not in st.session_state:
+    st.session_state.locality = "Teapa"  # Área de estudio
+if "coordinates" not in st.session_state:
+    st.session_state.coordinates = (17.558567, -92.948714)
+# if "latitude" not in st.session_state:
+#     st.session_state.latitude = -92.948714
+# if "longitude" not in st.session_state:
+#     st.session_state.longitude = 17.558567
 if "date_range" not in st.session_state:
     st.session_state.date_range = (dt.date(2024, 1, 1), dt.datetime.now())
 if "gee_available" not in st.session_state:
@@ -40,7 +42,7 @@ if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
 # Coordenadas de referencia (aprox) para Teapa, Tabasco
-COORDENADAS_INICIALES = (st.session_state.latitude, st.session_state.longitude)  # (lat, lon)
+# COORDENADAS_INICIALES = st.session_state.coordinates  # (lat, lon)
 
 # Variable para el máximo de nubes
 MAX_NUBES = 30
@@ -84,6 +86,7 @@ BASEMAPS = {
     ),
 }
 
+
 def connect_with_gee():
     # Importar módulos utilitarios
     if (
@@ -100,6 +103,27 @@ def connect_with_gee():
             st.session_state.gee_available = False
             return False
     return True
+
+
+def cloudMaskFunction(image):
+    qa = image.select("QA_PIXEL")
+    cloud_mask = qa.bitwiseAnd(1 << 5)
+    shadow_mask = qa.bitwiseAnd(1 << 3)
+    combined_mask = cloud_mask.Or(shadow_mask).eq(0)
+    return image.updateMask(combined_mask)
+
+
+def noThermalDataFunction(image):
+    st = image.select("ST_B10")
+    valid = st.gt(0) and (st.lt(65535))
+    return image.updateMask(valid)
+
+
+def applyScale(image):
+    opticalBands = (
+        image.select(["SR_B2", "SR_B3", "SR_B4"]).multiply(0.0000275).add(-0.2)
+    )
+    return image.addBands(opticalBands, None, True)
 
 
 # Método para agregar las imágenes de GEE a los mapas de folium
@@ -151,7 +175,7 @@ folium.Map.add_ee_layer = add_ee_layer
 
 
 # Método para generar el mapa base
-def create_map(center=COORDENADAS_INICIALES, zoom_start=13):
+def create_map(center=st.session_state.coordinates, zoom_start=13):
     # Add EE drawing method to folium.
     # """Crea un mapa base Folium centrado en Teapa."""
 
@@ -159,10 +183,23 @@ def create_map(center=COORDENADAS_INICIALES, zoom_start=13):
         st.toast("Folium no se encuentra instalado")
         return None
 
-    map = folium.Map(COORDENADAS_INICIALES, zoom_start=zoom_start, height=500)
+    map = folium.Map(st.session_state.coordinates, zoom_start=zoom_start, height=500)
 
     return map
-    
+
+
+def set_coordinates():
+    roi = (
+        ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+        .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+        .geometry()
+    )
+
+    st.session_state.coordinates = (
+        roi.centroid().coordinates().getInfo()[-1],
+        roi.centroid().coordinates().getInfo()[0],
+    )
+
 
 # Método para mostrar el panel del mapa
 def show_map_panel():
@@ -178,7 +215,7 @@ def show_map_panel():
     if st.session_state.gee_available:
         # # Add custom BASEMAPS
         # BASEMAPS["Google Maps"].add_to(map)
-        # BASEMAPS["Google Satellite Hybrid"].add_to(map)
+        BASEMAPS["Google Satellite Hybrid"].add_to(map)
 
         # CGAZ_ADM0 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM0");
         # CGAZ_ADM1 = ee.FeatureCollection("projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM1");
@@ -186,43 +223,119 @@ def show_map_panel():
         #     "projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM2"
         # )
 
-        localities = ee.FeatureCollection("projects/islas-calor-teapa-475319/assets/localidades_urbanas")
-        
-        filtered = localities.filter(ee.Filter.eq("NOMGEO", st.session_state.aoi))
+        roi = (
+            ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+            .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+            .geometry()
+        )
 
-        locality_geometry = filtered.geometry().centroid().getInfo()['coordinates']
+        collection = (
+            ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterDate(
+                (dt.datetime.fromisoformat(str(st.session_state.date_range[0]))),
+                dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
+            )
+            .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+            .map(lambda image: image.clip(roi))
+            .map(cloudMaskFunction)
+            .map(noThermalDataFunction)
+        )
 
-        st.session_state.latitude = locality_geometry[-1]
-        st.session_state.longitude = locality_geometry[0]
+        mosaico = collection.reduce(ee.Reducer.percentile([50]))
 
-        # st.write(locality_geometry[-1])
-        # st.write(locality_geometry[0])
+        # mosaicoRGB = (
+        #     ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+        #     .filterBounds(roi)
+        #     .filterDate(
+        #         (dt.datetime.fromisoformat(str(st.session_state.date_range[0]))),
+        #         dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
+        #     )
+        #     .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+        #     .map(cloudMaskFunction)
+        #     .map(applyScale)
+        #     .median()
+        # )
 
-        # st.write(localities)
+        # visColorVerdadero = {
+        #     "bands": ("SR_B4", "SR_B3", "SR_B2"),
+        #     "min": 0.0,
+        #     "max": 0.3,
+        # }
 
-        # boundaries = ee.FeatureCollection("WM/geoLab/geoBoundaries/600/ADM2")
+        # map.add_ee_layer(mosaicoRGB, visColorVerdadero, "RGB")
 
-        # filtered = boundaries.filter(ee.Filter.eq("shapeName", st.session_state.aoi))
+        bandaTermica = mosaico.select("ST_B10_p50")
 
-        style = {
-            "color": "0000ffff",
-            "width": 2,
-            "lineType": "solid",
-            "fillColor": "00000080",
+        # Aplicamos la fórmula de escalado para convertir a Kelvin y luego a Celsius.
+        # Estos valores son específicos de la Colección 2 de Landsat (L2).
+        lstCelsius = (
+            bandaTermica.multiply(0.00341802)
+            .add(149.0)
+            .subtract(273.15)
+            .rename("LST_Celsius")
+        )
+
+        visParamsLST = {
+            "palette": ["blue", "cyan", "green", "yellow", "red"],
+            "min": 28,
+            "max": 48,
         }
 
-        # map.add_ee_layer(filtered.style(**style), {}, "ADM2 Boundaries")
+        map.add_ee_layer(lstCelsius, visParamsLST, "Temperatura Superficial (°C) p50")
 
-        map.add_ee_layer(filtered.style(**style), {}, st.session_state.aoi)
+        percentilUHI = 90
+        minPixParche = 3
 
-        # roi = ee.Geometry.Point(-122.4488, 37.7589)
+        lstForThreshold = lstCelsius.rename("LST")
 
-        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[0])))
-        # st.write(dt.datetime.fromisoformat(str(st.session_state.date_range[1])))
+        pctDict = lstForThreshold.reduceRegion(
+            reducer=ee.Reducer.percentile([percentilUHI]),
+            geometry=roi,
+            scale=30,
+            maxPixels=1e9,
+            bestEffort=True,
+        )
 
-        # collection = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate((dt.datetime.fromisoformat(str(st.session_state.date_range[0]))), dt.datetime.fromisoformat(str(st.session_state.date_range[1]))).filterBounds(roi)
+        key = ee.String("LST_p").cat(ee.Number(percentilUHI).format())
 
-        #   .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", MAX_NUBES)).size().getInfo())
+        umbral = ee.Algorithms.If(
+            pctDict.contains(key),
+            ee.Number(pctDict.get(key)),
+            ee.Number(ee.Dictionary(pctDict).values().get(0)),
+        )
+
+        n_umbral = ee.Number(umbral)
+
+        uhiMask = lstForThreshold.gte(n_umbral)
+
+        compCount = uhiMask.connectedPixelCount(maxSize=1024, eightConnected=True)
+
+        uhiClean = uhiMask.updateMask(compCount.gte(minPixParche)).selfMask()
+
+        map.add_ee_layer(
+            uhiClean,
+            {"palette": ["#d7301f"]},
+            "Islas de calor (>= p" + str(percentilUHI) + ", clean)",
+        )
+
+        map.add_ee_layer(
+            lstCelsius.updateMask(uhiClean),
+            {
+                "min": visParamsLST["min"],
+                "max": visParamsLST["max"],
+                "palette": visParamsLST["palette"],
+            },
+            "LST en islas de calor",
+        )
+
+        # style = {
+        #     "color": "0000ffff",
+        #     "width": 1,
+        #     "lineType": "solid",
+        #     "fillColor": "00000000",
+        # }
+
+        # map.add_ee_layer(roi.style(**style), {}, st.session_state.locality)
 
         folium.LayerControl().add_to(map)
 
@@ -254,7 +367,34 @@ with st.sidebar:
     st.session_state.window = section
 
     # Filtros globales
-    st.markdown("Filtros")
+    st.markdown("Opciones")
+
+    st.markdown("Área de estudio (localidad)")
+    st.session_state.locality = st.selectbox(
+        "Definir localidad",
+        [
+            "Balancán",
+            "Cárdenas",
+            "Frontera",
+            "Villahermosa",
+            "Comalcalco",
+            "Cunduacán",
+            "Emiliano Zapata",
+            "Huimanguillo",
+            "Jalapa",
+            "Jalpa de Méndez",
+            "Jonuta",
+            "Macuspana",
+            "Nacajuca",
+            "Paraíso",
+            "Tacotalpa",
+            "Teapa",
+            "Tenosique de Pino Suárez",
+        ],
+    )
+
+    set_coordinates()
+
     min_date, max_date = dt.date(2014, 1, 1), dt.datetime.now()
     date_range = st.date_input(
         "Rango de fechas",
@@ -263,31 +403,24 @@ with st.sidebar:
         max_value=max_date,
         help="Periodo de análisis",
     )
-    # st.write(dt.datetime.fromisoformat(str(date_range[0])))
     if isinstance(date_range, tuple) and len(date_range) == 2:
         st.session_state.date_range = date_range
 
-    st.markdown("Área de estudio (AOI)")
-    st.session_state.aoi = st.selectbox("Definir AOI", ["Balancán", "Cárdenas", "Frontera", "Villahermosa", "Comalcalco", 
-                                                        "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
-                                                        "Jalpa de Méndez",  "Jonuta", "Macuspana", "Nacajuca", "Paraíso", "Tacotalpa",
-                                                        "Teapa", "Tenosique de Pino Suárez",])
-
     # if st.button("do something"):
     #     # do something
-    #     st.session_state["aoi"] = not st.session_state["aoi"]
+    #     st.session_state["locality"] = not st.session_state["locality"]
     #     st.rerun()
 
     # uploaded_geojson = None
-    # if aoi_option == "Subir GeoJSON":
+    # if locality_option == "Subir GeoJSON":
     #     uploaded_geojson = st.file_uploader(
     #         "Carga un archivo GeoJSON",
     #         type=["geojson", "json"],
-    #         help="El sistema intentará usar esta geometría como AOI",
+    #         help="El sistema intentará usar esta geometría como locality",
     #     )
 
-    # if st.button("Aplicar AOI/Filtros"):
-    #     st.session_state.aoi = uploaded_geojson if uploaded_geojson else "Teapa"
+    # if st.button("Aplicar locality/Filtros"):
+    #     st.session_state.locality = uploaded_geojson if uploaded_geojson else "Teapa"
     #     st.toast("Filtros aplicados", icon="✅")
 
     # if st.button("Generar"):
