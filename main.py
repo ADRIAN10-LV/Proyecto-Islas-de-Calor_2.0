@@ -91,7 +91,7 @@ def connect_with_gee():
     # Importar módulos utilitarios
     if (
         "gee_available" not in st.session_state
-        or st.session_state.gee_available is False
+        or st.session_state.gee_available == False
     ):
         try:
             ee.Authenticate()
@@ -189,17 +189,17 @@ def create_map(center=st.session_state.coordinates, zoom_start=13):
 
 
 def set_coordinates():
-    roi = (
-        ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
-        .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
-        .geometry()
-    )
+    if st.session_state.gee_available == True:
+        roi = (
+            ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+            .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+            .geometry()
+        )
 
-    st.session_state.coordinates = (
-        roi.centroid().coordinates().getInfo()[-1],
-        roi.centroid().coordinates().getInfo()[0],
-    )
-
+        st.session_state.coordinates = (
+            roi.centroid().coordinates().getInfo()[-1],
+            roi.centroid().coordinates().getInfo()[0],
+        )
 
 # Método para mostrar el panel del mapa
 def show_map_panel():
