@@ -9,6 +9,8 @@ import ee
 import datetime as dt
 import streamlit as st
 import folium
+import pandas as pd
+import matplotlib.pyplot as plt
 from folium import plugins
 from streamlit_folium import st_folium
 from pathlib import Path
@@ -241,7 +243,7 @@ def show_map_panel():
             .map(noThermalDataFunction)
         )
 
-        mosaico = collection.reduce(ee.Reducer.percentile([50]))
+        # mosaico = collection.reduce(ee.Reducer.percentile([50]))
 
         # mosaicoRGB = (
         #     ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
@@ -264,69 +266,69 @@ def show_map_panel():
 
         # map.add_ee_layer(mosaicoRGB, visColorVerdadero, "RGB")
 
-        bandaTermica = mosaico.select("ST_B10_p50")
+        # bandaTermica = mosaico.select("ST_B10_p50")
 
-        # Aplicamos la fórmula de escalado para convertir a Kelvin y luego a Celsius.
-        # Estos valores son específicos de la Colección 2 de Landsat (L2).
-        lstCelsius = (
-            bandaTermica.multiply(0.00341802)
-            .add(149.0)
-            .subtract(273.15)
-            .rename("LST_Celsius")
-        )
+        # # Aplicamos la fórmula de escalado para convertir a Kelvin y luego a Celsius.
+        # # Estos valores son específicos de la Colección 2 de Landsat (L2).
+        # lstCelsius = (
+        #     bandaTermica.multiply(0.00341802)
+        #     .add(149.0)
+        #     .subtract(273.15)
+        #     .rename("LST_Celsius")
+        # )
 
-        visParamsLST = {
-            "palette": ["blue", "cyan", "green", "yellow", "red"],
-            "min": 28,
-            "max": 48,
-        }
+        # visParamsLST = {
+        #     "palette": ["blue", "cyan", "green", "yellow", "red"],
+        #     "min": 28,
+        #     "max": 48,
+        # }
 
-        map.add_ee_layer(lstCelsius, visParamsLST, "Temperatura Superficial (°C) p50")
+        # map.add_ee_layer(lstCelsius, visParamsLST, "Temperatura Superficial (°C) p50")
 
-        percentilUHI = 90
-        minPixParche = 3
+        # percentilUHI = 90
+        # minPixParche = 3
 
-        lstForThreshold = lstCelsius.rename("LST")
+        # lstForThreshold = lstCelsius.rename("LST")
 
-        pctDict = lstForThreshold.reduceRegion(
-            reducer=ee.Reducer.percentile([percentilUHI]),
-            geometry=roi,
-            scale=30,
-            maxPixels=1e9,
-            bestEffort=True,
-        )
+        # pctDict = lstForThreshold.reduceRegion(
+        #     reducer=ee.Reducer.percentile([percentilUHI]),
+        #     geometry=roi,
+        #     scale=30,
+        #     maxPixels=1e9,
+        #     bestEffort=True,
+        # )
 
-        key = ee.String("LST_p").cat(ee.Number(percentilUHI).format())
+        # key = ee.String("LST_p").cat(ee.Number(percentilUHI).format())
 
-        umbral = ee.Algorithms.If(
-            pctDict.contains(key),
-            ee.Number(pctDict.get(key)),
-            ee.Number(ee.Dictionary(pctDict).values().get(0)),
-        )
+        # umbral = ee.Algorithms.If(
+        #     pctDict.contains(key),
+        #     ee.Number(pctDict.get(key)),
+        #     ee.Number(ee.Dictionary(pctDict).values().get(0)),
+        # )
 
-        n_umbral = ee.Number(umbral)
+        # n_umbral = ee.Number(umbral)
 
-        uhiMask = lstForThreshold.gte(n_umbral)
+        # uhiMask = lstForThreshold.gte(n_umbral)
 
-        compCount = uhiMask.connectedPixelCount(maxSize=1024, eightConnected=True)
+        # compCount = uhiMask.connectedPixelCount(maxSize=1024, eightConnected=True)
 
-        uhiClean = uhiMask.updateMask(compCount.gte(minPixParche)).selfMask()
+        # uhiClean = uhiMask.updateMask(compCount.gte(minPixParche)).selfMask()
 
-        map.add_ee_layer(
-            uhiClean,
-            {"palette": ["#d7301f"]},
-            "Islas de calor (>= p" + str(percentilUHI) + ", clean)",
-        )
+        # map.add_ee_layer(
+        #     uhiClean,
+        #     {"palette": ["#d7301f"]},
+        #     "Islas de calor (>= p" + str(percentilUHI) + ", clean)",
+        # )
 
-        map.add_ee_layer(
-            lstCelsius.updateMask(uhiClean),
-            {
-                "min": visParamsLST["min"],
-                "max": visParamsLST["max"],
-                "palette": visParamsLST["palette"],
-            },
-            "LST en islas de calor",
-        )
+        # map.add_ee_layer(
+        #     lstCelsius.updateMask(uhiClean),
+        #     {
+        #         "min": visParamsLST["min"],
+        #         "max": visParamsLST["max"],
+        #         "palette": visParamsLST["palette"],
+        #     },
+        #     "LST en islas de calor",
+        # )
 
         # style = {
         #     "color": "0000ffff",
@@ -434,12 +436,143 @@ with st.sidebar:
     # )
 
 
+# --------------------------------------------------------------
+# Panel de gráficas
+# --------------------------------------------------------------
+def show_graphics_panel():
+    st.markdown("### 🌡️ Análisis de Temperatura Superficial (LST)")
+    st.caption(
+        f"Localidad seleccionada: **{st.session_state.locality}** | "
+        f"Periodo: {st.session_state.date_range[0]} — {st.session_state.date_range[1]}"
+    )
+
+    tipo_grafica = st.radio(
+        "Tipo de gráfica:",
+        ["Evolución temporal", "Comparación entre municipios"],
+        horizontal=True,
+    )
+
+    if not connect_with_gee():
+        st.error("No se pudo conectar con Google Earth Engine.")
+        return
+
+    # ======================================
+    # Definición de la colección Landsat 8
+    # ======================================
+    collection = (
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+        .filterDate(
+            dt.datetime.fromisoformat(str(st.session_state.date_range[0])),
+            dt.datetime.fromisoformat(str(st.session_state.date_range[1])),
+        )
+        .filter(ee.Filter.lt("CLOUD_COVER", 30))
+        .map(cloudMaskFunction)
+        .map(noThermalDataFunction)
+    )
+
+    # Conversión de ST_B10 a °C
+    def calc_lst(img):
+        lst = img.select("ST_B10").multiply(0.00341802).add(149).subtract(273.15)
+        return lst.set("year", img.date().get("year"))
+
+    lst_collection = collection.map(calc_lst)
+
+    # ======================================
+    # MODO 1 — EVOLUCIÓN TEMPORAL
+    # ======================================
+    if tipo_grafica == "Evolución temporal":
+        roi = (
+            ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+            .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+            .geometry()
+        )
+
+        # Reducir promedio por año
+        def yearly_mean(year):
+            start = ee.Date.fromYMD(year, 1, 1)
+            end = start.advance(1, "year")
+            year_coll = lst_collection.filterDate(start, end)
+            lst_mean = (
+                year_coll.mean()
+                .reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=roi,
+                    scale=30,
+                    maxPixels=1e9,
+                )
+                .get("ST_B10")
+            )
+            return ee.Feature(None, {"year": year, "LST_media": lst_mean})
+
+        years = ee.List.sequence(2014, 2024)
+        lst_by_year = ee.FeatureCollection(years.map(yearly_mean)).getInfo()
+
+        # Convertir a DataFrame
+        data = []
+        for f in lst_by_year["features"]:
+            props = f["properties"]
+            if props["LST_media"] is not None:
+                data.append([int(props["year"]), float(props["LST_media"])])
+
+        df = pd.DataFrame(data, columns=["Año", "LST_media"]).sort_values("Año")
+        st.success(f"✅ Datos reales obtenidos de {st.session_state.locality}.")
+        st.line_chart(df, x="Año", y="LST_media")
+        st.caption("Evolución anual de la temperatura superficial promedio (°C).")
+
+    # ======================================
+    # MODO 2 — COMPARACIÓN ENTRE MUNICIPIOS
+    # ======================================
+    elif tipo_grafica == "Comparación entre municipios":
+        localidades = [
+            "Balancán", "Cárdenas", "Frontera", "Villahermosa", "Comalcalco",
+            "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
+            "Jalpa de Méndez", "Jonuta", "Macuspana", "Nacajuca", "Paraíso",
+            "Tacotalpa", "Teapa", "Tenosique de Pino Suárez"
+        ]
+
+        modo = st.radio(
+            "Modo de comparación:",
+            ["Seleccionar dos cabeceras", "Comparar todas"],
+            horizontal=True,
+        )
+
+        # Calcular promedio por localidad
+        features = ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
+        results = []
+
+        for muni in localidades:
+            roi = features.filter(ee.Filter.eq("NOMGEO", muni)).geometry()
+            lst_mean = (
+                lst_collection.mean()
+                .reduceRegion(
+                    reducer=ee.Reducer.mean(),
+                    geometry=roi,
+                    scale=30,
+                    maxPixels=1e9,
+                )
+                .getInfo()
+            )
+            if "ST_B10" in lst_mean and lst_mean["ST_B10"] is not None:
+                results.append({"Municipio": muni, "LST_promedio": float(lst_mean["ST_B10"])})
+
+        df_municipios = pd.DataFrame(results)
+
+        if modo == "Seleccionar dos cabeceras":
+            muni_1 = st.selectbox("Municipio 1", localidades, index=0)
+            muni_2 = st.selectbox("Municipio 2", localidades, index=1)
+            df_sel = df_municipios[df_municipios["Municipio"].isin([muni_1, muni_2])]
+            st.bar_chart(df_sel, x="Municipio", y="LST_promedio")
+        else:
+            st.bar_chart(df_municipios, x="Municipio", y="LST_promedio")
+
+        st.caption("Temperatura superficial promedio (°C) por cabecera municipal en el rango seleccionado.")
+        
 # Router de las ventanas
 match st.session_state.window:
     case "Mapas":
         show_map_panel()
     case "Gráficas":
-        st.write("Gráficas (placeholder, ya definidas arriba)")
+        show_graphics_panel()
     case "Reportes":
         st.write("Reportes (placeholder, ya definidos arriba)")
     case _:
