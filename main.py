@@ -75,25 +75,28 @@ def noThermalDataFunction(image):
     valid = st_band.gt(0).And(st_band.lt(65535))
     return image.updateMask(valid)
 
-def get_all_localidades():
-    """Obtiene todas las localidades disponibles del asset"""
+def get_localidades_disponibles():
+    """Obtiene lista de localidades disponibles - VERSIÓN SEGURA"""
     try:
         if not st.session_state.gee_available:
-            return []
+            return ["Teapa", "Villahermosa", "Cárdenas", "Comalcalco"]
             
         localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
         
-        # Obtener lista de nombres de localidades
+        # Obtener lista de nombres de forma segura
         localidades_list = localidades_urbanas.aggregate_array('NOMGEO').getInfo()
         
-        return sorted(localidades_list) if localidades_list else []
-        
+        if localidades_list and len(localidades_list) > 0:
+            return sorted([str(x) for x in localidades_list if x])
+        else:
+            return ["Teapa", "Villahermosa", "Cárdenas", "Comalcalco"]
+            
     except Exception as e:
         st.error(f"Error al cargar localidades: {str(e)}")
-        return []
+        return ["Teapa", "Villahermosa", "Cárdenas", "Comalcalco"]
 
 def get_localidad_geometry(localidad_nombre):
-    """Obtiene la geometría exacta de la localidad desde tu asset de GEE"""
+    """Obtiene la geometría exacta de la localidad - VERSIÓN SEGURA"""
     try:
         if not st.session_state.gee_available:
             return None, st.session_state.coordinates
@@ -115,19 +118,6 @@ def get_localidad_geometry(localidad_nombre):
         st.error(f"Error al cargar geometría para {localidad_nombre}: {str(e)}")
         return None, st.session_state.coordinates
 
-def get_all_polygons_geometry():
-    """Obtiene TODOS los polígonos del asset para visualización"""
-    try:
-        if not st.session_state.gee_available:
-            return None
-            
-        localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
-        return localidades_urbanas.geometry()
-        
-    except Exception as e:
-        st.error(f"Error al cargar todos los polígonos: {str(e)}")
-        return None
-
 def set_coordinates():
     """Configura coordenadas usando el asset de GEE"""
     aoi_geometry, coordinates = get_localidad_geometry(st.session_state.locality)
@@ -136,8 +126,21 @@ def set_coordinates():
     if aoi_geometry:
         st.session_state.aoi_geometry = aoi_geometry
 
+def create_simple_map(center, zoom=12):
+    """Crea un mapa simple y seguro"""
+    try:
+        return folium.Map(
+            location=[center[0], center[1]],
+            zoom_start=zoom,
+            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            attr='Google Satellite'
+        )
+    except Exception as e:
+        st.error(f"Error creando mapa: {e}")
+        return None
+
 def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percentil_uhi=90, min_pix_parche=3):
-    """Realiza el análisis COMPLETO de islas de calor"""
+    """Realiza el análisis COMPLETO de islas de calor - VERSIÓN SIMPLIFICADA"""
     try:
         # =================================================================================
         # PASO 1: Cargar y procesar imágenes Landsat
@@ -257,28 +260,9 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
         area_total_ha = ee.Number(area_total).divide(10000).getInfo() if area_total else 1
         porcentaje_uhi = (areaUHI_ha / area_total_ha * 100) if area_total_ha > 0 else 0
 
-        # Obtener URLs de tiles para el mapa
-        st.info("🗺️ Generando visualizaciones...")
-        
-        # Parámetros de visualización para LST
-        vis_params_lst = {
-            'min': 25,
-            'max': 45,
-            'palette': ['blue', 'cyan', 'green', 'yellow', 'orange', 'red']
-        }
-        
-        # Generar mapId para LST
-        lst_map_id = lstCelsius.clip(aoi_geometry).getMapId(vis_params_lst)
-        lst_tiles = lst_map_id['tile_fetcher'].url_format
-        
-        # Generar mapId para UHI
-        uhi_map_id = uhiClean.clip(aoi_geometry).getMapId({'palette': ['#d7301f']})
-        uhi_tiles = uhi_map_id['tile_fetcher'].url_format
-
         return {
             'lstCelsius': lstCelsius,
-            'lst_tiles': lst_tiles,
-            'uhi_tiles': uhi_tiles,
+            'uhiClean': uhiClean,
             'aoi_geometry': aoi_geometry,
             'estadisticas': stats,
             'area_uhi_ha': areaUHI_ha,
@@ -286,111 +270,15 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
             'porcentaje_uhi': porcentaje_uhi,
             'severidad': sevStats,
             'umbral_uhi': umbral.getInfo(),
-            'n_imagenes': count,
-            'vis_params_lst': vis_params_lst
+            'n_imagenes': count
         }
         
     except Exception as e:
         st.error(f"❌ Error en el análisis: {str(e)}")
         return None
 
-def create_map_with_layers(center, resultados, aoi_geometry, locality, show_all_polygons=False):
-    """Crea un mapa Folium con las capas de GEE y polígonos VISIBLES"""
-    try:
-        # Crear mapa base
-        m = folium.Map(
-            location=[center[0], center[1]],
-            zoom_start=12,
-            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-            attr='Google Satellite'
-        )
-        
-        # Agregar capa de LST
-        if resultados and 'lst_tiles' in resultados:
-            folium.TileLayer(
-                tiles=resultados['lst_tiles'],
-                attr='Google Earth Engine - LST',
-                name='🌡️ Temperatura Superficial (°C)',
-                overlay=True,
-                control=True
-            ).add_to(m)
-        
-        # Agregar capa de Islas de Calor
-        if resultados and 'uhi_tiles' in resultados:
-            folium.TileLayer(
-                tiles=resultados['uhi_tiles'],
-                attr='Google Earth Engine - UHI',
-                name='🔥 Islas de Calor',
-                overlay=True,
-                control=True
-            ).add_to(m)
-        
-        # 🔥 NUEVO: Cargar y mostrar TODOS los polígonos del asset
-        if show_all_polygons:
-            try:
-                all_polygons = get_all_polygons_geometry()
-                if all_polygons:
-                    # Convertir la FeatureCollection a GeoJSON
-                    polygons_json = all_polygons.getInfo()
-                    
-                    # Agregar todos los polígonos al mapa
-                    folium.GeoJson(
-                        polygons_json,
-                        name='🗺️ Todas las Áreas Urbanas',
-                        style_function=lambda x: {
-                            'fillColor': 'none',
-                            'color': 'yellow',
-                            'weight': 2,
-                            'fillOpacity': 0.1
-                        },
-                        tooltip=folium.GeoJsonTooltip(
-                            fields=['NOMGEO'],
-                            aliases=['Localidad:'],
-                            localize=True
-                        )
-                    ).add_to(m)
-            except Exception as e:
-                st.warning(f"No se pudieron cargar todos los polígonos: {e}")
-        
-        # Agregar polígono del área de estudio seleccionada (más destacado)
-        if aoi_geometry:
-            try:
-                # Obtener información específica del polígono seleccionado
-                localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
-                selected_feature = localidades_urbanas.filter(ee.Filter.eq("NOMGEO", locality)).first()
-                
-                if selected_feature:
-                    feature_info = selected_feature.getInfo()
-                    
-                    folium.GeoJson(
-                        feature_info['geometry'],
-                        name=f'📍 Área de Estudio: {locality}',
-                        style_function=lambda x: {
-                            'fillColor': 'none',
-                            'color': 'white',
-                            'weight': 4,
-                            'fillOpacity': 0
-                        },
-                        tooltip=folium.GeoJsonTooltip(
-                            fields=['NOMGEO'],
-                            aliases=['Localidad:'],
-                            localize=True
-                        )
-                    ).add_to(m)
-            except Exception as e:
-                st.warning(f"No se pudo cargar el polígono seleccionado: {e}")
-        
-        # Agregar control de capas
-        folium.LayerControl().add_to(m)
-        
-        return m
-        
-    except Exception as e:
-        st.error(f"❌ Error creando el mapa: {str(e)}")
-        return None
-
 def show_map_panel():
-    """Panel de mapas con análisis COMPLETO de islas de calor"""
+    """Panel de mapas - VERSIÓN SIMPLIFICADA Y SEGURA"""
     st.markdown("## 🌡️ Análisis de Islas de Calor - Áreas Urbanas de Tabasco")
     st.caption("Análisis usando los polígonos reales de áreas urbanas desde GEE Asset")
 
@@ -412,25 +300,20 @@ def show_map_panel():
             return
 
     # Obtener lista de localidades disponibles
-    localidades_disponibles = get_all_localidades()
-    if not localidades_disponibles:
-        st.error("No se pudieron cargar las localidades desde GEE")
-        return
-
+    localidades_disponibles = get_localidades_disponibles()
+    
     # Configuración del análisis
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         percentil_uhi = st.slider("Percentil para UHI", 80, 95, 90)
     with col2:
         min_pix_parche = st.slider("Mínimo píxeles por parche", 1, 10, 3)
-    with col3:
-        mostrar_todos_poligonos = st.checkbox("Mostrar todas las áreas urbanas", value=True)
 
-    # Selector de localidad actualizado
+    # Selector de localidad
     st.session_state.locality = st.selectbox(
         "Selecciona localidad para análisis:",
         localidades_disponibles,
-        index=localidades_disponibles.index(st.session_state.locality) if st.session_state.locality in localidades_disponibles else 0
+        index=0
     )
 
     set_coordinates()
@@ -447,27 +330,21 @@ def show_map_panel():
         st.session_state.date_range = date_range
 
     # Botón de ejecución
-    ejecutar_analisis = st.button("🚀 Ejecutar Análisis con Geometría Real", type="primary")
+    ejecutar_analisis = st.button("🚀 Ejecutar Análisis", type="primary")
 
     # Obtener geometría actual
     aoi_geometry, coordinates = get_localidad_geometry(st.session_state.locality)
     
-    if aoi_geometry is None:
-        st.error("No se pudo cargar la geometría de la localidad seleccionada")
-        # Crear mapa básico sin análisis pero con polígonos
-        m = create_map_with_layers(
-            coordinates if coordinates else st.session_state.coordinates,
-            None,
-            aoi_geometry,
-            st.session_state.locality,
-            show_all_polygons=mostrar_todos_poligonos
-        )
-        if m:
-            st_folium(m, width=None, height=500)
+    # Crear mapa base
+    map_center = coordinates if coordinates else st.session_state.coordinates
+    m = create_simple_map(map_center)
+    
+    if m is None:
+        st.error("No se pudo crear el mapa base")
         return
 
     # Ejecutar análisis cuando se presiona el botón
-    if ejecutar_analisis and st.session_state.gee_available:
+    if ejecutar_analisis and st.session_state.gee_available and aoi_geometry:
         with st.spinner("🛰️ Realizando análisis completo de islas de calor..."):
             
             fecha_inicio = st.session_state.date_range[0].strftime("%Y-%m-%d")
@@ -499,7 +376,7 @@ def show_map_panel():
                     st.metric("📊 % Área UHI", f"{resultados['porcentaje_uhi']:.1f}%")
 
                 # Estadísticas detalladas
-                with st.expander("📈 Estadísticas Detalladas del Área Urbana"):
+                with st.expander("📈 Estadísticas Detalladas"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -529,60 +406,36 @@ def show_map_panel():
                         })
                         st.dataframe(df_areas, use_container_width=True)
 
-                # =================================================================================
-                # CREAR Y MOSTRAR MAPA CON POLÍGONOS VISIBLES
-                # =================================================================================
-                
-                st.markdown("### 🗺️ Mapa de Resultados")
-                
-                # Crear mapa con las capas de GEE y polígonos
-                map_obj = create_map_with_layers(
-                    coordinates, 
-                    resultados, 
-                    aoi_geometry, 
-                    st.session_state.locality,
-                    show_all_polygons=mostrar_todos_poligonos
-                )
-                
-                if map_obj:
-                    # Mostrar el mapa
-                    st_folium(map_obj, width=None, height=600)
-                    
-                    st.info("""
-                    **💡 Instrucciones del mapa:**
-                    - Usa el control de capas (ⓘ) en la esquina superior derecha para activar/desactivar capas
-                    - **🌡️ Temperatura Superficial:** Mapa de calor con temperaturas en °C
-                    - **🔥 Islas de Calor:** Áreas que superan el percentil establecido
-                    - **📍 Área de Estudio:** Límite del área urbana seleccionada (blanco)
-                    - **🗺️ Todas las Áreas Urbanas:** Polígonos de todas las localidades (amarillo)
-                    """)
-                else:
-                    st.error("No se pudo crear el mapa con los resultados")
+                # Mostrar información del área de estudio
+                st.info(f"**📍 Área de estudio:** {st.session_state.locality}")
 
             else:
                 st.error("No se pudieron obtener resultados del análisis")
 
     else:
-        # Mostrar mapa básico con polígonos cuando no hay análisis
+        # Mostrar información cuando no hay análisis
+        if aoi_geometry:
+            st.info(f"**📍 Área de estudio seleccionada:** {st.session_state.locality}")
+        else:
+            st.warning("No se pudo cargar la geometría para la localidad seleccionada")
+        
         st.info("""
         **💡 Instrucciones:**
         1. Selecciona una localidad de Tabasco
         2. Define el rango de fechas para análisis  
-        3. Haz click en **'Ejecutar Análisis con Geometría Real'**
+        3. Haz click en **'Ejecutar Análisis'**
         
         *El análisis usará los polígonos exactos de áreas urbanas desde tu asset de GEE*
         """)
-        
-        # Mapa básico con polígonos visibles
-        m = create_map_with_layers(
-            coordinates,
-            None,
-            aoi_geometry,
-            st.session_state.locality,
-            show_all_polygons=mostrar_todos_poligonos
-        )
-        if m:
-            st_folium(m, width=None, height=500)
+
+    # Mostrar el mapa (SIEMPRE al final para evitar errores de renderizado)
+    try:
+        st_folium(m, width=None, height=500)
+    except Exception as e:
+        st.error(f"Error mostrando el mapa: {e}")
+        # Crear un mapa de respaldo
+        backup_map = folium.Map(location=[17.9895, -92.9183], zoom_start=10)
+        st_folium(backup_map, width=None, height=500)
 
 # Sidebar simplificado
 with st.sidebar:
@@ -619,7 +472,6 @@ elif st.session_state.window == "Gráficas":
     **Próximamente:**
     - Gráficas de evolución temporal de temperaturas
     - Comparación entre diferentes localidades
-    - Análisis de tendencias estacionales
     """)
 elif st.session_state.window == "Reportes":
     st.markdown("## 📊 Reportes")
@@ -627,7 +479,6 @@ elif st.session_state.window == "Reportes":
     **Próximamente:**
     - Generación de reportes PDF automáticos
     - Exportación de datos en CSV
-    - Reportes comparativos entre periodos
     """)
 elif st.session_state.window == "Acerca de":
     st.markdown("## ℹ️ Acerca de")
@@ -638,13 +489,6 @@ elif st.session_state.window == "Acerca de":
     - 🗺️ Uso de geometrías reales de áreas urbanas desde GEE
     - 🔥 Detección precisa de islas de calor por percentiles
     - 📊 Análisis estadístico dentro de polígonos urbanos
-    - 🌡️ Monitoreo basado en Landsat 8/9
     
     **Asset utilizado:** `projects/ee-cando/assets/areas_urbanas_Tab`
-    
-    **Tecnologías:**
-    - Google Earth Engine
-    - Streamlit
-    - Folium
-    - Landsat 8/9 Collection 2
     """)
