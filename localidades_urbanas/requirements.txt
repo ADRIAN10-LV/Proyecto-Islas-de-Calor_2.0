@@ -1,0 +1,6 @@
+streamlit>=1.28.0
+earthengine-api>=0.1.374
+geemap>=0.29.2
+folium>=0.14.0
+plotly>=5.15.0
+pandas>=2.1.0
