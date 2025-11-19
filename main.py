@@ -1,6 +1,5 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Autor: Adrian Lara (estructura base generada con ayuda de IA)
 # --------------------------------------------------------------
 
 import sys
@@ -28,7 +27,7 @@ for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
 
 # Estado inicial
 if "locality" not in st.session_state:
-    st.session_state.locality = "Teapa"  # Área de estudio
+    st.session_state.locality = "Teapa"
 if "coordinates" not in st.session_state:
     st.session_state.coordinates = (17.558567, -92.948714)
 if "date_range" not in st.session_state:
@@ -38,32 +37,10 @@ if "gee_available" not in st.session_state:
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
-# Variable para el máximo de nubes
 MAX_NUBES = 30
 
 # Mapas para agregar a folium
 BASEMAPS = {
-    "Google Maps": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Maps",
-        overlay=True,
-        control=True,
-    ),
-    "Google Satellite": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Satellite",
-        overlay=True,
-        control=True,
-    ),
-    "Google Terrain": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Terrain",
-        overlay=True,
-        control=True,
-    ),
     "Google Satellite Hybrid": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -71,36 +48,27 @@ BASEMAPS = {
         overlay=True,
         control=True,
     ),
-    "Esri Satellite": folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Esri Satellite",
-        overlay=True,
-        control=True,
-    ),
 }
 
 def connect_with_gee():
-    """Conecta con Google Earth Engine usando las credenciales de Streamlit secrets"""
+    """Conecta con Google Earth Engine usando Service Account"""
     if not st.session_state.get("gee_available", False):
         try:
-            # Verificar si estamos usando service account o autenticación normal
+            # Método Service Account (recomendado para producción)
             if "google" in st.secrets and "ee_service_account" in st.secrets["google"]:
-                # Método Service Account
                 service_account = st.secrets["google"]["ee_service_account"]
-                key_data = st.secrets["google"]["ee_private_key"]
+                private_key = st.secrets["google"]["ee_private_key"]
                 
-                credentials = ee.ServiceAccountCredentials(service_account, key_data=key_data)
+                # Crear credenciales
+                credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
                 ee.Initialize(credentials)
-                st.toast("✅ Google Earth Engine inicializado con Service Account")
+                st.session_state.gee_available = True
+                st.success("✅ Google Earth Engine inicializado con Service Account")
+                return True
             else:
-                # Método de autenticación normal (para desarrollo)
-                ee.Initialize(project='islas-calor-tabasco')
-                st.toast("✅ Google Earth Engine inicializado")
-            
-            st.session_state.gee_available = True
-            return True
-            
+                st.error("❌ No se encontraron las credenciales de Service Account en los secrets")
+                return False
+                
         except Exception as e:
             st.error(f"❌ Error conectando con GEE: {str(e)}")
             st.session_state.gee_available = False
@@ -115,18 +83,13 @@ def cloudMaskFunction(image):
     return image.updateMask(combined_mask)
 
 def noThermalDataFunction(image):
-    st = image.select("ST_B10")
-    valid = st.gt(0).And(st.lt(65535))
+    st_band = image.select("ST_B10")
+    valid = st_band.gt(0).And(st_band.lt(65535))
     return image.updateMask(valid)
-
-def applyScale(image):
-    opticalBands = image.select(["SR_B2", "SR_B3", "SR_B4"]).multiply(0.0000275).add(-0.2)
-    return image.addBands(opticalBands, None, True)
 
 # Método para agregar las imágenes de GEE a los mapas de folium
 def add_ee_layer(self, ee_object, vis_params, name):
     try:
-        # display ee.Image()
         if isinstance(ee_object, ee.image.Image):
             map_id_dict = ee.Image(ee_object).getMapId(vis_params)
             folium.raster_layers.TileLayer(
@@ -136,7 +99,6 @@ def add_ee_layer(self, ee_object, vis_params, name):
                 overlay=True,
                 control=True,
             ).add_to(self)
-        # display ee.ImageCollection()
         elif isinstance(ee_object, ee.imagecollection.ImageCollection):
             ee_object_new = ee_object.mosaic()
             map_id_dict = ee.Image(ee_object_new).getMapId(vis_params)
@@ -147,39 +109,18 @@ def add_ee_layer(self, ee_object, vis_params, name):
                 overlay=True,
                 control=True,
             ).add_to(self)
-        # display ee.Geometry()
-        elif isinstance(ee_object, ee.geometry.Geometry):
-            folium.GeoJson(
-                data=ee_object.getInfo(), name=name, overlay=True, control=True
-            ).add_to(self)
-        # display ee.FeatureCollection()
-        elif isinstance(ee_object, ee.featurecollection.FeatureCollection):
-            ee_object_new = ee.Image().paint(ee_object, 0, 2)
-            map_id_dict = ee.Image(ee_object_new).getMapId(vis_params)
-            folium.raster_layers.TileLayer(
-                tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
-            ).add_to(self)
-
     except Exception as e:
         st.error(f"Error mostrando capa {name}: {str(e)}")
 
 folium.Map.add_ee_layer = add_ee_layer
 
-# Método para generar el mapa base
 def create_map(center=None, zoom_start=13):
     if center is None:
         center = st.session_state.coordinates
-    
     map = folium.Map(location=center, zoom_start=zoom_start)
     return map
 
 def set_coordinates():
-    """Establece las coordenadas basadas en la localidad seleccionada"""
-    # Coordenadas aproximadas de las localidades de Tabasco
     coordinates_map = {
         "Balancán": (17.8086, -91.5364),
         "Cárdenas": (18.0014, -93.3756),
@@ -203,30 +144,45 @@ def set_coordinates():
     if st.session_state.locality in coordinates_map:
         st.session_state.coordinates = coordinates_map[st.session_state.locality]
 
-# Método para mostrar el panel del mapa
 def show_map_panel():
     st.markdown("Islas de calor por localidades de Tabasco")
     st.caption("Visualización de LST desde Google Earth Engine.")
 
-    # Conectar con GEE primero
+    # Intentar conectar con GEE
     if not connect_with_gee():
-        st.error("No se pudo conectar con Google Earth Engine. Verifica las credenciales.")
+        st.warning("""
+        **Configuración requerida para Google Earth Engine:**
+        
+        1. **Para desarrollo local:** Ejecuta en tu terminal:
+           ```python
+           import ee
+           ee.Authenticate()
+           ee.Initialize()
+           ```
+        
+        2. **Para producción:** Configura los secrets en `.streamlit/secrets.toml`:
+           ```toml
+           [google]
+           ee_service_account = "tu-service-account@proyecto.iam.gserviceaccount.com"
+           ee_private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+           ```
+        """)
+        
+        # Mostrar mapa base sin GEE
+        map = create_map()
+        BASEMAPS["Google Satellite Hybrid"].add_to(map)
+        st_folium(map, width=None, height=600)
         return
 
     map = create_map()
-    if map is None:
-        st.error("Error creando el mapa base")
-        return
-
-    # Add custom BASEMAPS
     BASEMAPS["Google Satellite Hybrid"].add_to(map)
 
     try:
-        # Crear geometría rectangular alrededor de las coordenadas
+        # Crear geometría rectangular
         lat, lon = st.session_state.coordinates
         roi = ee.Geometry.Rectangle([
-            lon - 0.05, lat - 0.05,  # SO
-            lon + 0.05, lat + 0.05   # NE
+            lon - 0.05, lat - 0.05,
+            lon + 0.05, lat + 0.05
         ])
 
         # Obtener colección de Landsat
@@ -241,17 +197,15 @@ def show_map_panel():
             .map(noThermalDataFunction)
         )
 
-        # Verificar si hay imágenes disponibles
         image_count = collection.size().getInfo()
         if image_count == 0:
             st.warning("No se encontraron imágenes Landsat para el rango de fechas y área seleccionados.")
-            # Mostrar mapa base sin capas GEE
             st_folium(map, width=None, height=600)
             return
 
         mosaico = collection.median().clip(roi)
 
-        # Calcular LST en Celsius
+        # Calcular LST
         bandaTermica = mosaico.select("ST_B10")
         lstCelsius = bandaTermica.multiply(0.00341802).add(149.0).subtract(273.15).rename("LST_Celsius")
 
@@ -261,29 +215,7 @@ def show_map_panel():
             "max": 48,
         }
 
-        # Añadir capa LST al mapa
         map.add_ee_layer(lstCelsius, visParamsLST, "Temperatura Superficial (°C)")
-
-        # Detectar islas de calor (percentil 90)
-        percentilUHI = 90
-        lstForThreshold = lstCelsius.rename("LST")
-        
-        pctValue = lstForThreshold.reduceRegion(
-            reducer=ee.Reducer.percentile([percentilUHI]),
-            geometry=roi,
-            scale=30,
-            maxPixels=1e9
-        ).get("LST").getInfo()
-
-        uhiMask = lstForThreshold.gte(pctValue)
-        uhiClean = uhiMask.selfMask()
-
-        # Añadir capas de islas de calor
-        map.add_ee_layer(
-            uhiClean,
-            {"palette": ["#d7301f"]},
-            f"Islas de calor (>= p{percentilUHI})"
-        )
 
         folium.LayerControl().add_to(map)
 
@@ -304,7 +236,6 @@ with st.sidebar:
     st.markdown("Islas de calor Tabasco")
     st.caption("Dashboard base para análisis de islas de calor urbano (LST/NDVI)")
 
-    # Selector de sección
     section = st.radio(
         "Secciones",
         ["Mapas", "Gráficas", "Reportes", "Acerca de"],
@@ -312,10 +243,7 @@ with st.sidebar:
     )
     st.session_state.window = section
 
-    # Filtros globales
     st.markdown("Opciones")
-
-    st.markdown("Área de estudio (localidad)")
     st.session_state.locality = st.selectbox(
         "Definir localidad",
         [
@@ -334,7 +262,6 @@ with st.sidebar:
         value=st.session_state.date_range,
         min_value=min_date,
         max_value=max_date,
-        help="Periodo de análisis",
     )
     if isinstance(date_range, tuple) and len(date_range) == 2:
         st.session_state.date_range = date_range
