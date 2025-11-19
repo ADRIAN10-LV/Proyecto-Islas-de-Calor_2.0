@@ -75,6 +75,23 @@ def noThermalDataFunction(image):
     valid = st_band.gt(0).And(st_band.lt(65535))
     return image.updateMask(valid)
 
+def get_all_localidades():
+    """Obtiene todas las localidades disponibles del asset"""
+    try:
+        if not st.session_state.gee_available:
+            return []
+            
+        localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
+        
+        # Obtener lista de nombres de localidades
+        localidades_list = localidades_urbanas.aggregate_array('NOMGEO').getInfo()
+        
+        return sorted(localidades_list) if localidades_list else []
+        
+    except Exception as e:
+        st.error(f"Error al cargar localidades: {str(e)}")
+        return []
+
 def get_localidad_geometry(localidad_nombre):
     """Obtiene la geometría exacta de la localidad desde tu asset de GEE"""
     try:
@@ -97,6 +114,19 @@ def get_localidad_geometry(localidad_nombre):
     except Exception as e:
         st.error(f"Error al cargar geometría para {localidad_nombre}: {str(e)}")
         return None, st.session_state.coordinates
+
+def get_all_polygons_geometry():
+    """Obtiene TODOS los polígonos del asset para visualización"""
+    try:
+        if not st.session_state.gee_available:
+            return None
+            
+        localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
+        return localidades_urbanas.geometry()
+        
+    except Exception as e:
+        st.error(f"Error al cargar todos los polígonos: {str(e)}")
+        return None
 
 def set_coordinates():
     """Configura coordenadas usando el asset de GEE"""
@@ -264,8 +294,8 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
         st.error(f"❌ Error en el análisis: {str(e)}")
         return None
 
-def create_map_with_layers(center, resultados, aoi_geometry, locality):
-    """Crea un mapa Folium con las capas de GEE CORREGIDAS"""
+def create_map_with_layers(center, resultados, aoi_geometry, locality, show_all_polygons=False):
+    """Crea un mapa Folium con las capas de GEE y polígonos VISIBLES"""
     try:
         # Crear mapa base
         m = folium.Map(
@@ -280,7 +310,7 @@ def create_map_with_layers(center, resultados, aoi_geometry, locality):
             folium.TileLayer(
                 tiles=resultados['lst_tiles'],
                 attr='Google Earth Engine - LST',
-                name='Temperatura Superficial (°C)',
+                name='🌡️ Temperatura Superficial (°C)',
                 overlay=True,
                 control=True
             ).add_to(m)
@@ -290,23 +320,65 @@ def create_map_with_layers(center, resultados, aoi_geometry, locality):
             folium.TileLayer(
                 tiles=resultados['uhi_tiles'],
                 attr='Google Earth Engine - UHI',
-                name=f'Islas de Calor (≥ p{90})',
+                name='🔥 Islas de Calor',
                 overlay=True,
                 control=True
             ).add_to(m)
         
-        # Agregar polígono del área de estudio
+        # 🔥 NUEVO: Cargar y mostrar TODOS los polígonos del asset
+        if show_all_polygons:
+            try:
+                all_polygons = get_all_polygons_geometry()
+                if all_polygons:
+                    # Convertir la FeatureCollection a GeoJSON
+                    polygons_json = all_polygons.getInfo()
+                    
+                    # Agregar todos los polígonos al mapa
+                    folium.GeoJson(
+                        polygons_json,
+                        name='🗺️ Todas las Áreas Urbanas',
+                        style_function=lambda x: {
+                            'fillColor': 'none',
+                            'color': 'yellow',
+                            'weight': 2,
+                            'fillOpacity': 0.1
+                        },
+                        tooltip=folium.GeoJsonTooltip(
+                            fields=['NOMGEO'],
+                            aliases=['Localidad:'],
+                            localize=True
+                        )
+                    ).add_to(m)
+            except Exception as e:
+                st.warning(f"No se pudieron cargar todos los polígonos: {e}")
+        
+        # Agregar polígono del área de estudio seleccionada (más destacado)
         if aoi_geometry:
-            folium.GeoJson(
-                data=aoi_geometry.getInfo(),
-                name=f'Área Urbana: {locality}',
-                style_function=lambda x: {
-                    'fillColor': 'none',
-                    'color': 'white',
-                    'weight': 3,
-                    'fillOpacity': 0
-                }
-            ).add_to(m)
+            try:
+                # Obtener información específica del polígono seleccionado
+                localidades_urbanas = ee.FeatureCollection("projects/ee-cando/assets/areas_urbanas_Tab")
+                selected_feature = localidades_urbanas.filter(ee.Filter.eq("NOMGEO", locality)).first()
+                
+                if selected_feature:
+                    feature_info = selected_feature.getInfo()
+                    
+                    folium.GeoJson(
+                        feature_info['geometry'],
+                        name=f'📍 Área de Estudio: {locality}',
+                        style_function=lambda x: {
+                            'fillColor': 'none',
+                            'color': 'white',
+                            'weight': 4,
+                            'fillOpacity': 0
+                        },
+                        tooltip=folium.GeoJsonTooltip(
+                            fields=['NOMGEO'],
+                            aliases=['Localidad:'],
+                            localize=True
+                        )
+                    ).add_to(m)
+            except Exception as e:
+                st.warning(f"No se pudo cargar el polígono seleccionado: {e}")
         
         # Agregar control de capas
         folium.LayerControl().add_to(m)
@@ -339,6 +411,12 @@ def show_map_panel():
             """)
             return
 
+    # Obtener lista de localidades disponibles
+    localidades_disponibles = get_all_localidades()
+    if not localidades_disponibles:
+        st.error("No se pudieron cargar las localidades desde GEE")
+        return
+
     # Configuración del análisis
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -346,20 +424,46 @@ def show_map_panel():
     with col2:
         min_pix_parche = st.slider("Mínimo píxeles por parche", 1, 10, 3)
     with col3:
-        st.markdown("###")
-        ejecutar_analisis = st.button("🚀 Ejecutar Análisis con Geometría Real", type="primary")
+        mostrar_todos_poligonos = st.checkbox("Mostrar todas las áreas urbanas", value=True)
+
+    # Selector de localidad actualizado
+    st.session_state.locality = st.selectbox(
+        "Selecciona localidad para análisis:",
+        localidades_disponibles,
+        index=localidades_disponibles.index(st.session_state.locality) if st.session_state.locality in localidades_disponibles else 0
+    )
+
+    set_coordinates()
+
+    # Selector de fechas
+    min_date, max_date = dt.date(2014, 1, 1), dt.date.today()
+    date_range = st.date_input(
+        "Rango de fechas para análisis",
+        value=st.session_state.date_range,
+        min_value=min_date,
+        max_value=max_date,
+    )
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        st.session_state.date_range = date_range
+
+    # Botón de ejecución
+    ejecutar_analisis = st.button("🚀 Ejecutar Análisis con Geometría Real", type="primary")
 
     # Obtener geometría actual
     aoi_geometry, coordinates = get_localidad_geometry(st.session_state.locality)
     
     if aoi_geometry is None:
         st.error("No se pudo cargar la geometría de la localidad seleccionada")
-        # Crear mapa básico sin análisis
-        m = folium.Map(
-            location=[st.session_state.coordinates[0], st.session_state.coordinates[1]],
-            zoom_start=12
+        # Crear mapa básico sin análisis pero con polígonos
+        m = create_map_with_layers(
+            coordinates if coordinates else st.session_state.coordinates,
+            None,
+            aoi_geometry,
+            st.session_state.locality,
+            show_all_polygons=mostrar_todos_poligonos
         )
-        st_folium(m, width=None, height=500)
+        if m:
+            st_folium(m, width=None, height=500)
         return
 
     # Ejecutar análisis cuando se presiona el botón
@@ -425,45 +529,19 @@ def show_map_panel():
                         })
                         st.dataframe(df_areas, use_container_width=True)
 
-                # Interpretación de resultados
-                with st.expander("🔍 Diagnóstico y Recomendaciones"):
-                    porcentaje_uhi = resultados['porcentaje_uhi']
-                    temp_promedio = resultados['estadisticas'].get('LST_Celsius_mean', 0)
-                    
-                    if porcentaje_uhi < 10:
-                        st.success("**✅ BUENA SITUACIÓN:** Baja proporción de islas de calor")
-                    elif 10 <= porcentaje_uhi < 25:
-                        st.warning("**⚠️ ATENCIÓN:** Proporción moderada de islas de calor")
-                    else:
-                        st.error("**🚨 CRÍTICO:** Alta proporción de islas de calor")
-                    
-                    st.markdown(f"""
-                    **Resumen para {st.session_state.locality}:**
-                    - 📍 **Área analizada:** {resultados['area_total_ha']:.1f} ha
-                    - 🔥 **Zonas críticas:** {resultados['area_uhi_ha']:.1f} ha ({porcentaje_uhi:.1f}%)
-                    - 🌡 **Temperatura promedio:** {temp_promedio:.1f}°C
-                    - 🎯 **Umbral UHI:** {resultados['umbral_uhi']:.1f}°C
-                    - 🛰 **Imágenes utilizadas:** {resultados['n_imagenes']}
-                    
-                    **Acciones recomendadas:**
-                    - 🌳 **Reforestación estratégica** en zonas UHI identificadas
-                    - 🏗 **Revisión de materiales** de construcción en áreas críticas
-                    - 💧 **Incorporación de agua** en el paisaje urbano
-                    - 🌬 **Protección de corredores** de ventilación natural
-                    """)
-
                 # =================================================================================
-                # CREAR Y MOSTRAR MAPA CON CAPAS
+                # CREAR Y MOSTRAR MAPA CON POLÍGONOS VISIBLES
                 # =================================================================================
                 
                 st.markdown("### 🗺️ Mapa de Resultados")
                 
-                # Crear mapa con las capas de GEE
+                # Crear mapa con las capas de GEE y polígonos
                 map_obj = create_map_with_layers(
                     coordinates, 
                     resultados, 
                     aoi_geometry, 
-                    st.session_state.locality
+                    st.session_state.locality,
+                    show_all_polygons=mostrar_todos_poligonos
                 )
                 
                 if map_obj:
@@ -473,9 +551,10 @@ def show_map_panel():
                     st.info("""
                     **💡 Instrucciones del mapa:**
                     - Usa el control de capas (ⓘ) en la esquina superior derecha para activar/desactivar capas
-                    - **Temperatura Superficial:** Mapa de calor con temperaturas en °C
-                    - **Islas de Calor:** Áreas que superan el percentil establecido
-                    - **Área Urbana:** Límite del área de estudio
+                    - **🌡️ Temperatura Superficial:** Mapa de calor con temperaturas en °C
+                    - **🔥 Islas de Calor:** Áreas que superan el percentil establecido
+                    - **📍 Área de Estudio:** Límite del área urbana seleccionada (blanco)
+                    - **🗺️ Todas las Áreas Urbanas:** Polígonos de todas las localidades (amarillo)
                     """)
                 else:
                     st.error("No se pudo crear el mapa con los resultados")
@@ -484,7 +563,7 @@ def show_map_panel():
                 st.error("No se pudieron obtener resultados del análisis")
 
     else:
-        # Mostrar mapa básico cuando no hay análisis
+        # Mostrar mapa básico con polígonos cuando no hay análisis
         st.info("""
         **💡 Instrucciones:**
         1. Selecciona una localidad de Tabasco
@@ -494,14 +573,18 @@ def show_map_panel():
         *El análisis usará los polígonos exactos de áreas urbanas desde tu asset de GEE*
         """)
         
-        # Mapa básico sin análisis
-        m = folium.Map(
-            location=[coordinates[0], coordinates[1]],
-            zoom_start=12
+        # Mapa básico con polígonos visibles
+        m = create_map_with_layers(
+            coordinates,
+            None,
+            aoi_geometry,
+            st.session_state.locality,
+            show_all_polygons=mostrar_todos_poligonos
         )
-        st_folium(m, width=None, height=500)
+        if m:
+            st_folium(m, width=None, height=500)
 
-# Sidebar
+# Sidebar simplificado
 with st.sidebar:
     st.markdown("# 🌡 Islas de Calor Tabasco")
     st.caption("Análisis con geometrías reales de áreas urbanas")
@@ -512,32 +595,6 @@ with st.sidebar:
         index=0,
     )
     st.session_state.window = section
-
-    st.markdown("---")
-    st.markdown("### ⚙️ Configuración")
-
-    st.session_state.locality = st.selectbox(
-        "Localidad de estudio",
-        [
-            "Balancán", "Cárdenas", "Frontera", "Villahermosa", "Comalcalco",
-            "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
-            "Jalpa de Méndez", "Jonuta", "Macuspana", "Nacajuca", "Paraíso",
-            "Tacotalpa", "Teapa", "Tenosique de Pino Suárez"
-        ],
-        index=15
-    )
-
-    set_coordinates()
-
-    min_date, max_date = dt.date(2014, 1, 1), dt.date.today()
-    date_range = st.date_input(
-        "Rango de fechas para análisis",
-        value=st.session_state.date_range,
-        min_value=min_date,
-        max_value=max_date,
-    )
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        st.session_state.date_range = date_range
 
     st.markdown("---")
     
@@ -583,11 +640,11 @@ elif st.session_state.window == "Acerca de":
     - 📊 Análisis estadístico dentro de polígonos urbanos
     - 🌡️ Monitoreo basado en Landsat 8/9
     
+    **Asset utilizado:** `projects/ee-cando/assets/areas_urbanas_Tab`
+    
     **Tecnologías:**
     - Google Earth Engine
     - Streamlit
     - Folium
     - Landsat 8/9 Collection 2
-    
-    *Asset utilizado: projects/ee-cando/assets/areas_urbanas_Tab*
     """)
