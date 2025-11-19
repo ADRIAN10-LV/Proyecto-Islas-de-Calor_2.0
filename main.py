@@ -51,22 +51,53 @@ BASEMAPS = {
 }
 
 def connect_with_gee():
-    """Conecta con Google Earth Engine usando Service Account"""
+    """Conecta con Google Earth Engine usando Service Account de Streamlit Secrets"""
     if not st.session_state.get("gee_available", False):
         try:
-            # Método Service Account (recomendado para producción)
-            if "google" in st.secrets and "ee_service_account" in st.secrets["google"]:
-                service_account = st.secrets["google"]["ee_service_account"]
-                private_key = st.secrets["google"]["ee_private_key"]
+            # Verificar si los secrets están configurados
+            if "google" in st.secrets:
+                # Opción 1: Formato con service account y private key
+                if "ee_service_account" in st.secrets["google"] and "ee_private_key" in st.secrets["google"]:
+                    service_account = st.secrets["google"]["ee_service_account"]
+                    private_key = st.secrets["google"]["ee_private_key"]
+                    
+                    credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
+                    ee.Initialize(credentials)
+                    st.session_state.gee_available = True
+                    st.success("✅ Google Earth Engine inicializado con Service Account")
+                    return True
                 
-                # Crear credenciales
-                credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
-                ee.Initialize(credentials)
-                st.session_state.gee_available = True
-                st.success("✅ Google Earth Engine inicializado con Service Account")
-                return True
+                # Opción 2: Formato con credenciales en JSON
+                elif "gee_credentials" in st.secrets["google"]:
+                    creds_dict = st.secrets["google"]["gee_credentials"]
+                    credentials = ee.ServiceAccountCredentials.from_json_keyfile_dict(creds_dict)
+                    ee.Initialize(credentials)
+                    st.session_state.gee_available = True
+                    st.success("✅ Google Earth Engine inicializado con credenciales JSON")
+                    return True
+                
+                else:
+                    st.error("""
+                    ❌ Credenciales de GEE no encontradas en los secrets.
+                    
+                    Por favor, configura tus secrets en Streamlit Cloud con uno de estos formatos:
+                    
+                    **Formato 1:**
+                    ```toml
+                    [google]
+                    ee_service_account = "tu-service-account@proyecto.iam.gserviceaccount.com"
+                    ee_private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+                    ```
+                    
+                    **Formato 2:**
+                    ```toml
+                    [google]
+                    gee_credentials = {"type": "service_account", "project_id": "...", "private_key_id": "...", ...}
+                    ```
+                    """)
+                    return False
             else:
-                st.error("❌ No se encontraron las credenciales de Service Account en los secrets")
+                st.error("No se encontró la sección 'google' en los secrets de Streamlit")
                 return False
                 
         except Exception as e:
@@ -150,24 +181,6 @@ def show_map_panel():
 
     # Intentar conectar con GEE
     if not connect_with_gee():
-        st.warning("""
-        **Configuración requerida para Google Earth Engine:**
-        
-        1. **Para desarrollo local:** Ejecuta en tu terminal:
-           ```python
-           import ee
-           ee.Authenticate()
-           ee.Initialize()
-           ```
-        
-        2. **Para producción:** Configura los secrets en `.streamlit/secrets.toml`:
-           ```toml
-           [google]
-           ee_service_account = "tu-service-account@proyecto.iam.gserviceaccount.com"
-           ee_private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
-           ```
-        """)
-        
         # Mostrar mapa base sin GEE
         map = create_map()
         BASEMAPS["Google Satellite Hybrid"].add_to(map)
