@@ -8,7 +8,7 @@ import datetime as dt
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-from pathlib import Path
+import json
 
 # Configuración de la página
 st.set_page_config(
@@ -31,17 +31,6 @@ if "window" not in st.session_state:
 
 MAX_NUBES = 30
 
-# Mapas para agregar a folium
-BASEMAPS = {
-    "Google Satellite Hybrid": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Satellite",
-        overlay=True,
-        control=True,
-    ),
-}
-
 def connect_with_gee():
     """Conexión MEJORADA para Streamlit Cloud"""
     try:
@@ -59,30 +48,19 @@ def connect_with_gee():
             credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
             ee.Initialize(credentials)
             st.session_state.gee_available = True
+            st.success("✅ Conectado a Google Earth Engine")
             return True
             
-    except ee.EEException as e:
-        st.error(f"❌ Error de Google Earth Engine: {str(e)}")
     except Exception as e:
-        st.error(f"❌ Error inesperado: {str(e)}")
+        st.warning(f"Service Account no disponible: {e}")
     
     try:
         ee.Initialize()
         st.session_state.gee_available = True
+        st.success("✅ Conectado a Google Earth Engine")
         return True
     except Exception as e:
-        st.error("""
-        **🔐 CONFIGURACIÓN REQUERIDA - Google Earth Engine**
-        
-        Para que la aplicación funcione, necesitas configurar las credenciales de GEE.
-        
-        **En Streamlit Cloud → Settings → Secrets agrega:**
-        ```toml
-        GEE_SERVICE_ACCOUNT = "streamlit-bot@ee-cando.iam.gserviceaccount.com"
-        GEE_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\\n..."
-        ```
-        """)
-        st.session_state.gee_available = False
+        st.error(f"❌ Error conectando a Google Earth Engine: {e}")
         return False
 
 def cloudMaskFunction(image):
@@ -96,46 +74,6 @@ def noThermalDataFunction(image):
     st_band = image.select("ST_B10")
     valid = st_band.gt(0).And(st_band.lt(65535))
     return image.updateMask(valid)
-
-def applyScale(image):
-    opticalBands = image.select(["SR_B2", "SR_B3", "SR_B4"]).multiply(0.0000275).add(-0.2)
-    return image.addBands(opticalBands, None, True)
-
-# 🔧 FUNCIÓN add_ee_layer CORREGIDA
-def add_ee_layer(self, ee_image, vis_params, layer_name):
-    """Método CORREGIDO para agregar capas de GEE a Folium"""
-    try:
-        # Asegurarnos de que tenemos una imagen válida
-        if not isinstance(ee_image, ee.Image):
-            st.warning(f"❌ No se puede cargar {layer_name}: no es una imagen válida")
-            return
-            
-        map_id_dict = ee_image.getMapId(vis_params)
-        
-        folium.raster_layers.TileLayer(
-            tiles=map_id_dict["tile_fetcher"].url_format,
-            attr="Google Earth Engine",
-            name=layer_name,
-            overlay=True,
-            control=True,
-        ).add_to(self)
-        
-    except Exception as e:
-        st.warning(f"⚠️ No se pudo cargar la capa {layer_name}: {str(e)}")
-
-# Asignar el método corregido a Folium
-folium.Map.add_ee_layer = add_ee_layer
-
-def create_map(center=None, zoom_start=12):
-    """Crea un mapa base Folium"""
-    if center is None:
-        center = st.session_state.coordinates
-    
-    map_obj = folium.Map(
-        location=[center[0], center[1]], 
-        zoom_start=zoom_start
-    )
-    return map_obj
 
 def get_localidad_geometry(localidad_nombre):
     """Obtiene la geometría exacta de la localidad desde tu asset de GEE"""
@@ -171,6 +109,12 @@ def set_coordinates():
 def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percentil_uhi=90, min_pix_parche=3):
     """Realiza el análisis COMPLETO de islas de calor"""
     try:
+        # =================================================================================
+        # PASO 1: Cargar y procesar imágenes Landsat
+        # =================================================================================
+        
+        st.info("📡 Cargando imágenes Landsat...")
+        
         # Cargar colección de imágenes Landsat 8
         coleccion = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
                     .filterBounds(aoi_geometry)
@@ -181,23 +125,22 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
 
         # Verificar si hay imágenes disponibles
         count = coleccion.size().getInfo()
+        st.info(f"📊 Encontradas {count} imágenes Landsat")
+        
         if count == 0:
-            st.error("No se encontraron imágenes Landsat para el rango de fechas y área seleccionados")
+            st.error("❌ No se encontraron imágenes Landsat para el rango de fechas y área seleccionados")
             return None
 
         # Crear mosaico con percentil 50
+        st.info("🔄 Creando mosaico de imágenes...")
         mosaico = coleccion.reduce(ee.Reducer.percentile([50]))
 
-        # Mosaico RGB para referencia
-        mosaicoRGB = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-                     .filterBounds(aoi_geometry)
-                     .filterDate(fecha_inicio, fecha_fin)
-                     .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-                     .map(cloudMaskFunction)
-                     .map(applyScale)
-                     .median())
-
-        # Calcular LST
+        # =================================================================================
+        # PASO 2: Calcular Temperatura Superficial (LST) en Celsius
+        # =================================================================================
+        
+        st.info("🌡️ Calculando temperatura superficial...")
+        
         banda_termica = mosaico.select("ST_B10_p50")
         lstCelsius = (banda_termica
                      .multiply(0.00341802)
@@ -205,9 +148,15 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
                      .subtract(273.15)
                      .rename("LST_Celsius"))
 
-        # Detección de Islas de Calor
+        # =================================================================================
+        # PASO 3: Detección de Islas de Calor por UMBRAL ESTADÍSTICO
+        # =================================================================================
+        
+        st.info("🔥 Detectando islas de calor...")
+        
         lstForThreshold = lstCelsius.rename("LST")
         
+        # Calcular percentil para umbral
         pctDict = lstForThreshold.reduceRegion(
             reducer=ee.Reducer.percentile([percentil_uhi]),
             geometry=aoi_geometry,
@@ -224,12 +173,18 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
         )
         umbral = ee.Number(umbral)
 
-        # Crear máscara de islas de calor
+        # Crear máscara de islas de calor con limpieza por tamaño mínimo
         uhiMask = lstForThreshold.gte(umbral)
         compCount = uhiMask.connectedPixelCount(maxSize=1024, eightConnected=True)
         uhiClean = uhiMask.updateMask(compCount.gte(min_pix_parche)).selfMask()
 
-        # Calcular estadísticas
+        # =================================================================================
+        # PASO 4: Calcular Estadísticas y Métricas
+        # =================================================================================
+        
+        st.info("📈 Calculando estadísticas...")
+        
+        # Estadísticas generales de LST
         stats = lstCelsius.reduceRegion(
             reducer=ee.Reducer.minMax()
             .combine(ee.Reducer.mean(), sharedInputs=True)
@@ -240,7 +195,7 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
             bestEffort=True,
         ).getInfo()
 
-        # Área de islas de calor
+        # Área de islas de calor en hectáreas
         areaUHI = ee.Image.pixelArea().updateMask(uhiClean).reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=aoi_geometry,
@@ -272,10 +227,28 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
         area_total_ha = ee.Number(area_total).divide(10000).getInfo() if area_total else 1
         porcentaje_uhi = (areaUHI_ha / area_total_ha * 100) if area_total_ha > 0 else 0
 
+        # Obtener URLs de tiles para el mapa
+        st.info("🗺️ Generando visualizaciones...")
+        
+        # Parámetros de visualización para LST
+        vis_params_lst = {
+            'min': 25,
+            'max': 45,
+            'palette': ['blue', 'cyan', 'green', 'yellow', 'orange', 'red']
+        }
+        
+        # Generar mapId para LST
+        lst_map_id = lstCelsius.clip(aoi_geometry).getMapId(vis_params_lst)
+        lst_tiles = lst_map_id['tile_fetcher'].url_format
+        
+        # Generar mapId para UHI
+        uhi_map_id = uhiClean.clip(aoi_geometry).getMapId({'palette': ['#d7301f']})
+        uhi_tiles = uhi_map_id['tile_fetcher'].url_format
+
         return {
-            'mosaicoRGB': mosaicoRGB,
             'lstCelsius': lstCelsius,
-            'uhiClean': uhiClean,
+            'lst_tiles': lst_tiles,
+            'uhi_tiles': uhi_tiles,
             'aoi_geometry': aoi_geometry,
             'estadisticas': stats,
             'area_uhi_ha': areaUHI_ha,
@@ -283,11 +256,65 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
             'porcentaje_uhi': porcentaje_uhi,
             'severidad': sevStats,
             'umbral_uhi': umbral.getInfo(),
-            'n_imagenes': count
+            'n_imagenes': count,
+            'vis_params_lst': vis_params_lst
         }
         
     except Exception as e:
-        st.error(f"Error en el análisis: {str(e)}")
+        st.error(f"❌ Error en el análisis: {str(e)}")
+        return None
+
+def create_map_with_layers(center, resultados, aoi_geometry, locality):
+    """Crea un mapa Folium con las capas de GEE CORREGIDAS"""
+    try:
+        # Crear mapa base
+        m = folium.Map(
+            location=[center[0], center[1]],
+            zoom_start=12,
+            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            attr='Google Satellite'
+        )
+        
+        # Agregar capa de LST
+        if resultados and 'lst_tiles' in resultados:
+            folium.TileLayer(
+                tiles=resultados['lst_tiles'],
+                attr='Google Earth Engine - LST',
+                name='Temperatura Superficial (°C)',
+                overlay=True,
+                control=True
+            ).add_to(m)
+        
+        # Agregar capa de Islas de Calor
+        if resultados and 'uhi_tiles' in resultados:
+            folium.TileLayer(
+                tiles=resultados['uhi_tiles'],
+                attr='Google Earth Engine - UHI',
+                name=f'Islas de Calor (≥ p{90})',
+                overlay=True,
+                control=True
+            ).add_to(m)
+        
+        # Agregar polígono del área de estudio
+        if aoi_geometry:
+            folium.GeoJson(
+                data=aoi_geometry.getInfo(),
+                name=f'Área Urbana: {locality}',
+                style_function=lambda x: {
+                    'fillColor': 'none',
+                    'color': 'white',
+                    'weight': 3,
+                    'fillOpacity': 0
+                }
+            ).add_to(m)
+        
+        # Agregar control de capas
+        folium.LayerControl().add_to(m)
+        
+        return m
+        
+    except Exception as e:
+        st.error(f"❌ Error creando el mapa: {str(e)}")
         return None
 
 def show_map_panel():
@@ -295,12 +322,22 @@ def show_map_panel():
     st.markdown("## 🌡️ Análisis de Islas de Calor - Áreas Urbanas de Tabasco")
     st.caption("Análisis usando los polígonos reales de áreas urbanas desde GEE Asset")
 
+    # Verificar conexión GEE
     if not st.session_state.get('gee_available', False):
-        connect_with_gee()
-
-    if not st.session_state.gee_available:
-        st.error("No se pudo conectar con Google Earth Engine. Configura las credenciales en Secrets.")
-        return
+        if not connect_with_gee():
+            st.error("""
+            **🔐 Configuración Requerida**
+            
+            Para usar la aplicación, configura las credenciales de Google Earth Engine en Streamlit Cloud:
+            
+            1. Ve a **Settings → Secrets**
+            2. Agrega:
+            ```
+            GEE_SERVICE_ACCOUNT = "streamlit-bot@ee-cando.iam.gserviceaccount.com"
+            GEE_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\\n..."
+            ```
+            """)
+            return
 
     # Configuración del análisis
     col1, col2, col3 = st.columns(3)
@@ -313,20 +350,19 @@ def show_map_panel():
         ejecutar_analisis = st.button("🚀 Ejecutar Análisis con Geometría Real", type="primary")
 
     # Obtener geometría actual
-    aoi_geometry, _ = get_localidad_geometry(st.session_state.locality)
+    aoi_geometry, coordinates = get_localidad_geometry(st.session_state.locality)
     
     if aoi_geometry is None:
         st.error("No se pudo cargar la geometría de la localidad seleccionada")
+        # Crear mapa básico sin análisis
+        m = folium.Map(
+            location=[st.session_state.coordinates[0], st.session_state.coordinates[1]],
+            zoom_start=12
+        )
+        st_folium(m, width=None, height=500)
         return
 
-    map_obj = create_map()
-    if map_obj is None:
-        st.error("Error al crear el mapa")
-        return
-
-    # Agregar base map
-    BASEMAPS["Google Satellite Hybrid"].add_to(map_obj)
-
+    # Ejecutar análisis cuando se presiona el botón
     if ejecutar_analisis and st.session_state.gee_available:
         with st.spinner("🛰️ Realizando análisis completo de islas de calor..."):
             
@@ -336,60 +372,12 @@ def show_map_panel():
             resultados = analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percentil_uhi, min_pix_parche)
             
             if resultados:
-                # 🔧 VISUALIZACIÓN CORREGIDA - SIN PARÁMETROS EXTRA
-                
-                # 1. Mosaico RGB (Color Verdadero)
-                vis_color_verdadero = {
-                    'bands': ['SR_B4', 'SR_B3', 'SR_B2'],
-                    'min': 0.0,
-                    'max': 0.3
-                }
-                map_obj.add_ee_layer(
-                    resultados['mosaicoRGB'].clip(aoi_geometry), 
-                    vis_color_verdadero, 
-                    "Color Verdadero (RGB)"
-                )
-
-                # 2. Temperatura Superficial (LST)
-                vis_params_lst = {
-                    'palette': ['blue', 'cyan', 'green', 'yellow', 'red'],
-                    'min': 28,
-                    'max': 48,
-                }
-                map_obj.add_ee_layer(
-                    resultados['lstCelsius'].clip(aoi_geometry), 
-                    vis_params_lst, 
-                    "Temperatura Superficial (°C) p50"
-                )
-
-                # 3. Islas de Calor
-                map_obj.add_ee_layer(
-                    resultados['uhiClean'].clip(aoi_geometry), 
-                    {'palette': ['#d7301f']}, 
-                    f"Islas de Calor (≥ p{percentil_uhi})"
-                )
-
-                # 4. Área de estudio (polígono real)
-                try:
-                    # Para geometrías, usamos GeoJson directamente
-                    folium.GeoJson(
-                        data=aoi_geometry.getInfo(),
-                        name=f"Área Urbana: {st.session_state.locality}",
-                        style_function=lambda x: {
-                            'color': 'white',
-                            'weight': 2,
-                            'fillColor': '00000000'
-                        }
-                    ).add_to(map_obj)
-                except Exception as e:
-                    st.warning(f"No se pudo agregar el polígono del área de estudio: {e}")
-
                 # =================================================================================
-                # PANEL DE RESULTADOS
+                # MOSTRAR RESULTADOS NUMÉRICOS
                 # =================================================================================
                 
-                st.success("✅ Análisis completado usando geometrías reales!")
-
+                st.success("✅ Análisis completado exitosamente!")
+                
                 # Métricas principales
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -414,11 +402,12 @@ def show_map_panel():
                         st.subheader("Distribución de Temperaturas")
                         stats = resultados['estadisticas']
                         df_stats = pd.DataFrame({
-                            'Percentil': ['P5', 'P50 (Mediana)', 'P95'],
+                            'Métrica': ['Mínima', 'Promedio', 'Mediana', 'Máxima'],
                             'Temperatura (°C)': [
-                                stats.get('LST_Celsius_p5', 0),
+                                stats.get('LST_Celsius_min', 0),
+                                stats.get('LST_Celsius_mean', 0),
                                 stats.get('LST_Celsius_p50', 0),
-                                stats.get('LST_Celsius_p95', 0)
+                                stats.get('LST_Celsius_max', 0)
                             ]
                         })
                         st.dataframe(df_stats, use_container_width=True)
@@ -426,25 +415,91 @@ def show_map_panel():
                     with col2:
                         st.subheader("Áreas y Cobertura")
                         df_areas = pd.DataFrame({
-                            'Métrica': ['Área Total', 'Área UHI', 'Porcentaje UHI'],
+                            'Métrica': ['Área Total', 'Área UHI', 'Porcentaje UHI', 'Imágenes Usadas'],
                             'Valor': [
                                 f"{resultados['area_total_ha']:.1f} ha",
                                 f"{resultados['area_uhi_ha']:.1f} ha",
-                                f"{resultados['porcentaje_uhi']:.1f}%"
+                                f"{resultados['porcentaje_uhi']:.1f}%",
+                                f"{resultados['n_imagenes']}"
                             ]
                         })
                         st.dataframe(df_areas, use_container_width=True)
 
+                # Interpretación de resultados
+                with st.expander("🔍 Diagnóstico y Recomendaciones"):
+                    porcentaje_uhi = resultados['porcentaje_uhi']
+                    temp_promedio = resultados['estadisticas'].get('LST_Celsius_mean', 0)
+                    
+                    if porcentaje_uhi < 10:
+                        st.success("**✅ BUENA SITUACIÓN:** Baja proporción de islas de calor")
+                    elif 10 <= porcentaje_uhi < 25:
+                        st.warning("**⚠️ ATENCIÓN:** Proporción moderada de islas de calor")
+                    else:
+                        st.error("**🚨 CRÍTICO:** Alta proporción de islas de calor")
+                    
+                    st.markdown(f"""
+                    **Resumen para {st.session_state.locality}:**
+                    - 📍 **Área analizada:** {resultados['area_total_ha']:.1f} ha
+                    - 🔥 **Zonas críticas:** {resultados['area_uhi_ha']:.1f} ha ({porcentaje_uhi:.1f}%)
+                    - 🌡 **Temperatura promedio:** {temp_promedio:.1f}°C
+                    - 🎯 **Umbral UHI:** {resultados['umbral_uhi']:.1f}°C
+                    - 🛰 **Imágenes utilizadas:** {resultados['n_imagenes']}
+                    
+                    **Acciones recomendadas:**
+                    - 🌳 **Reforestación estratégica** en zonas UHI identificadas
+                    - 🏗 **Revisión de materiales** de construcción en áreas críticas
+                    - 💧 **Incorporación de agua** en el paisaje urbano
+                    - 🌬 **Protección de corredores** de ventilación natural
+                    """)
+
+                # =================================================================================
+                # CREAR Y MOSTRAR MAPA CON CAPAS
+                # =================================================================================
+                
+                st.markdown("### 🗺️ Mapa de Resultados")
+                
+                # Crear mapa con las capas de GEE
+                map_obj = create_map_with_layers(
+                    coordinates, 
+                    resultados, 
+                    aoi_geometry, 
+                    st.session_state.locality
+                )
+                
+                if map_obj:
+                    # Mostrar el mapa
+                    st_folium(map_obj, width=None, height=600)
+                    
+                    st.info("""
+                    **💡 Instrucciones del mapa:**
+                    - Usa el control de capas (ⓘ) en la esquina superior derecha para activar/desactivar capas
+                    - **Temperatura Superficial:** Mapa de calor con temperaturas en °C
+                    - **Islas de Calor:** Áreas que superan el percentil establecido
+                    - **Área Urbana:** Límite del área de estudio
+                    """)
+                else:
+                    st.error("No se pudo crear el mapa con los resultados")
+
+            else:
+                st.error("No se pudieron obtener resultados del análisis")
+
     else:
+        # Mostrar mapa básico cuando no hay análisis
         st.info("""
         **💡 Instrucciones:**
         1. Selecciona una localidad de Tabasco
         2. Define el rango de fechas para análisis  
         3. Haz click en **'Ejecutar Análisis con Geometría Real'**
+        
+        *El análisis usará los polígonos exactos de áreas urbanas desde tu asset de GEE*
         """)
-
-    # Mostrar el mapa
-    st_folium(map_obj, width=None, height=600)
+        
+        # Mapa básico sin análisis
+        m = folium.Map(
+            location=[coordinates[0], coordinates[1]],
+            zoom_start=12
+        )
+        st_folium(m, width=None, height=500)
 
 # Sidebar
 with st.sidebar:
@@ -486,12 +541,15 @@ with st.sidebar:
 
     st.markdown("---")
     
+    # Estado de conexión
     if st.session_state.gee_available:
         st.success("✅ **CONECTADO A GEE**")
+        st.caption("Listo para analizar")
     else:
-        st.error("❌ **NO CONECTADO A GEE**")
+        st.error("❌ **NO CONECTADO**")
+        st.caption("Configura las credenciales")
     
-    if st.button("🔄 Verificar Conexión GEE", type="secondary"):
+    if st.button("🔄 Verificar Conexión GEE"):
         connect_with_gee()
         st.rerun()
 
@@ -500,10 +558,20 @@ if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
     st.markdown("## 📈 Gráficas")
-    st.info("Módulo de gráficas en desarrollo")
+    st.info("""
+    **Próximamente:**
+    - Gráficas de evolución temporal de temperaturas
+    - Comparación entre diferentes localidades
+    - Análisis de tendencias estacionales
+    """)
 elif st.session_state.window == "Reportes":
     st.markdown("## 📊 Reportes")
-    st.info("Módulo de reportes en desarrollo")
+    st.info("""
+    **Próximamente:**
+    - Generación de reportes PDF automáticos
+    - Exportación de datos en CSV
+    - Reportes comparativos entre periodos
+    """)
 elif st.session_state.window == "Acerca de":
     st.markdown("## ℹ️ Acerca de")
     st.write("""
@@ -513,6 +581,13 @@ elif st.session_state.window == "Acerca de":
     - 🗺️ Uso de geometrías reales de áreas urbanas desde GEE
     - 🔥 Detección precisa de islas de calor por percentiles
     - 📊 Análisis estadístico dentro de polígonos urbanos
+    - 🌡️ Monitoreo basado en Landsat 8/9
     
-    *Usa el asset: projects/ee-cando/assets/areas_urbanas_Tab*
+    **Tecnologías:**
+    - Google Earth Engine
+    - Streamlit
+    - Folium
+    - Landsat 8/9 Collection 2
+    
+    *Asset utilizado: projects/ee-cando/assets/areas_urbanas_Tab*
     """)
