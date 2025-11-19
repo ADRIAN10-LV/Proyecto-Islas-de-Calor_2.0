@@ -33,13 +33,6 @@ MAX_NUBES = 30
 
 # Mapas para agregar a folium
 BASEMAPS = {
-    "Google Maps": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Maps",
-        overlay=True,
-        control=True,
-    ),
     "Google Satellite Hybrid": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -149,6 +142,10 @@ def get_localidad_geometry(localidad_nombre):
         # Filtra la localidad específica por NOMGEO
         aoi_feature = localidades_urbanas.filter(ee.Filter.eq("NOMGEO", localidad_nombre)).first()
         
+        if aoi_feature is None:
+            st.error(f"No se encontró la localidad '{localidad_nombre}' en el asset de GEE")
+            return None, st.session_state.coordinates
+            
         # Obtiene la geometría y el centroide
         aoi_geometry = aoi_feature.geometry()
         centroid = aoi_geometry.centroid().coordinates().getInfo()
@@ -184,6 +181,12 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
                     .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
                     .map(cloudMaskFunction)
                     .map(noThermalDataFunction))
+
+        # Verificar si hay imágenes disponibles
+        count = coleccion.size().getInfo()
+        if count == 0:
+            st.error("No se encontraron imágenes Landsat para el rango de fechas y área seleccionados")
+            return None
 
         # Crear mosaico con percentil 50 (robusto)
         mosaico = coleccion.reduce(ee.Reducer.percentile([50]))
@@ -294,7 +297,7 @@ def analizar_islas_calor_completo(aoi_geometry, fecha_inicio, fecha_fin, percent
             'porcentaje_uhi': porcentaje_uhi,
             'severidad': sevStats,
             'umbral_uhi': umbral.getInfo(),
-            'n_imagenes': coleccion.size().getInfo()
+            'n_imagenes': count
         }
         
     except Exception as e:
@@ -347,7 +350,7 @@ def show_map_panel():
             
             if resultados:
                 # =================================================================================
-                # VISUALIZACIÓN DE RESULTADOS EN EL MAPA (IGUAL QUE TU CÓDIGO GEE)
+                # VISUALIZACIÓN DE RESULTADOS EN EL MAPA
                 # =================================================================================
                 
                 # 1. Mosaico RGB (Color Verdadero)
@@ -368,7 +371,7 @@ def show_map_panel():
                 map_obj.add_ee_layer(resultados['lstCelsius'].clip(aoi_geometry), vis_params_lst, 
                                    "Temperatura Superficial (°C) p50", True)
 
-                # 3. Islas de Calor (EXACTAMENTE como en tu código GEE)
+                # 3. Islas de Calor
                 map_obj.add_ee_layer(resultados['uhiClean'].clip(aoi_geometry), 
                                    {'palette': ['#d7301f']}, 
                                    f"Islas de Calor (≥ p{percentil_uhi})", True)
@@ -421,9 +424,9 @@ def show_map_panel():
                         st.subheader("Áreas y Cobertura")
                         df_areas = pd.DataFrame({
                             'Métrica': ['Área Total', 'Área UHI', 'Porcentaje UHI'],
-                            'Valor (ha)': [
-                                f"{resultados['area_total_ha']:.1f}",
-                                f"{resultados['area_uhi_ha']:.1f}",
+                            'Valor': [
+                                f"{resultados['area_total_ha']:.1f} ha",
+                                f"{resultados['area_uhi_ha']:.1f} ha",
                                 f"{resultados['porcentaje_uhi']:.1f}%"
                             ]
                         })
@@ -447,6 +450,7 @@ def show_map_panel():
                     - 🔥 **Zonas críticas:** {resultados['area_uhi_ha']:.1f} ha ({porcentaje_uhi:.1f}%)
                     - 🌡 **Temperatura promedio:** {temp_promedio:.1f}°C
                     - 🎯 **Umbral UHI:** {resultados['umbral_uhi']:.1f}°C
+                    - 🛰 **Imágenes utilizadas:** {resultados['n_imagenes']}
                     
                     **Acciones recomendadas:**
                     - 🌳 **Reforestación estratégica** en zonas UHI identificadas
@@ -468,8 +472,6 @@ def show_map_panel():
 
     # Mostrar el mapa
     st_folium(map_obj, width=None, height=600)
-
-# [El resto del código permanece igual - sidebar, configuración, etc.]
 
 # Sidebar
 with st.sidebar:
