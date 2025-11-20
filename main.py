@@ -10,7 +10,7 @@ import folium
 from streamlit_folium import st_folium
 from pathlib import Path
 
-# --- 1. CONFIGURACIÓN DE PÁGINA ---
+# --- 1. CONFIGURACIÓN DE PÁGINA (Debe ir primero) ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
     page_icon="🌡️",
@@ -27,7 +27,7 @@ if "locality" not in st.session_state:
 if "coordinates" not in st.session_state:
     st.session_state.coordinates = (17.9895, -92.9183)
 if "date_range" not in st.session_state:
-    # Default: Época seca/cálida recomendada en tu script
+    # Default: Época seca/cálida (Abril-Mayo) para mejor contraste térmico
     st.session_state.date_range = (dt.date(2024, 4, 1), dt.date(2024, 5, 30))
 if "gee_available" not in st.session_state:
     st.session_state.gee_available = False
@@ -106,7 +106,7 @@ def create_map():
         height=500
     )
     folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        tiles="[https://mt1.google.com/vt/lyrs=y&x=](https://mt1.google.com/vt/lyrs=y&x=){x}&y={y}&z={z}",
         attr="Google",
         name="Google Satellite Hybrid",
         overlay=True,
@@ -126,26 +126,29 @@ def show_map_panel():
     m = create_map()
 
     try:
-        # 1. Obtener Polígono
+        # 1. Obtener Polígono del Asset
         urban_areas = ee.FeatureCollection(ASSET_ID)
+        # Filtramos por la columna NOMGEO que contiene el nombre de la ciudad
         target_feature = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
         
         roi = None
+        # Verificamos si el filtro devolvió algún resultado
         if target_feature.size().getInfo() > 0:
             roi = target_feature.geometry()
             centroid = roi.centroid().coordinates().getInfo()
             m.location = [centroid[1], centroid[0]]
             
-            # Visualizar borde AOI
+            # Visualizar borde AOI en Rojo
             empty = ee.Image().byte()
             outline = empty.paint(featureCollection=target_feature, color=1, width=2)
             m.add_ee_layer(outline, {'palette': 'FF0000'}, f"AOI: {st.session_state.locality}")
         else:
-            st.error(f"Localidad '{st.session_state.locality}' no encontrada en el Asset.")
+            st.error(f"Localidad '{st.session_state.locality}' no encontrada en el Asset '{ASSET_ID}'.")
+            st.info("Usando punto central por defecto.")
             roi = ee.Geometry.Point([st.session_state.coordinates[1], st.session_state.coordinates[0]]).buffer(3000)
 
         if roi:
-            # 2. Definir parámetros del script original
+            # 2. Definir parámetros de fechas
             start = st.session_state.date_range[0].strftime("%Y-%m-%d")
             end = st.session_state.date_range[1].strftime("%Y-%m-%d")
             
@@ -155,7 +158,7 @@ def show_map_panel():
                    .filterDate(start, end)
                    .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
                    .map(cloudMaskFunction)
-                   .map(maskThermalNoData)) # Nueva función de limpieza
+                   .map(maskThermalNoData))
             
             count = col.size().getInfo()
             if count > 0:
@@ -166,7 +169,6 @@ def show_map_panel():
                 mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
                 
                 # 5. Calcular LST
-                # Seleccionamos explícitamente la banda reducida
                 thermal_band = mosaic.select("ST_B10_p50")
                 
                 lst_celsius = (thermal_band
@@ -194,18 +196,18 @@ def show_map_panel():
                     bestEffort=True
                 )
                 
-                # Extracción segura del valor (Server-side -> Client-side para mostrar dato)
+                # Extracción segura del valor
                 p90_val = stats.get("LST_Celsius")
                 
                 if p90_val:
-                    # Convertir a objeto ee.Number para operaciones
+                    # Convertir a objeto ee.Number
                     umbral = ee.Number(p90_val)
                     
-                    # 6.2 Máscara Inicial
+                    # 6.2 Máscara Inicial (mayores al umbral)
                     uhi_mask = lst_celsius.gte(umbral)
                     
                     # 6.3 LIMPIEZA MORFOLÓGICA (connectedPixelCount)
-                    # Elimina parches menores a 3 píxeles (ruido)
+                    # Elimina parches menores a 3 píxeles (ruido suelto)
                     min_pix_parche = 3
                     comp_count = uhi_mask.connectedPixelCount(maxSize=1024, eightConnected=True)
                     uhi_clean = uhi_mask.updateMask(comp_count.gte(min_pix_parche)).selfMask()
@@ -214,7 +216,7 @@ def show_map_panel():
                     m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"Islas de Calor (≥ {p90_val.getInfo():.1f}°C)")
                     
                     # Métricas en pantalla
-                    st.metric(label="Umbral Crítico (p90)", value=f"{p90_val.getInfo():.2f} °C")
+                    st.metric(label="Umbral Crítico (p90) Detectado", value=f"{p90_val.getInfo():.2f} °C")
                 
             else:
                 st.warning("No hay imágenes limpias en este rango de fechas. Intenta ampliar el rango (ej. Abril-Mayo).")
@@ -225,7 +227,7 @@ def show_map_panel():
     folium.LayerControl().add_to(m)
     st_folium(m, width="100%", height=600)
 
-# --- 7. LAYOUT LATERAL ---
+# --- 7. LAYOUT LATERAL (SIDEBAR) ---
 with st.sidebar:
     st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
@@ -233,6 +235,8 @@ with st.sidebar:
     st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Info"])
     
     st.markdown("### Selección de Zona")
+    
+    # Lista de ciudades (Deben coincidir con la columna NOMGEO de tu Asset)
     ciudades = [
         "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", 
         "Paraíso", "Frontera", "Macuspana", "Tenosique",
@@ -242,12 +246,11 @@ with st.sidebar:
     ]
     st.session_state.locality = st.selectbox("Ciudad / Localidad", ciudades, index=0)
     
-    # Diccionario de coordenadas base (referencia inicial)
+    # Coordenadas base (referencia inicial)
     coords_base = {"Villahermosa": (17.98, -92.92), "Teapa": (17.55, -92.95)}
     if st.session_state.locality in coords_base:
         st.session_state.coordinates = coords_base[st.session_state.locality]
     
-    # Fechas sugeridas por el código JS (Abril-Mayo es temporada seca)
     st.caption("Sugerencia: Usar Abril-Mayo para análisis crítico.")
     fechas = st.date_input("Periodo de Análisis", value=st.session_state.date_range)
     if len(fechas) == 2: st.session_state.date_range = fechas
@@ -257,19 +260,10 @@ with st.sidebar:
         st.session_state.gee_available = False
         st.rerun()
 
+# --- 8. ROUTER PRINCIPAL ---
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
     st.info("Gráficas en desarrollo...")
 else:
-    st.markdown("### Acerca de\nAnálisis robusto de LST usando limpieza morfológica y percentiles.")
-```
-
-### Mejoras implementadas (Python vs JS):
-
-1.  **Función `maskThermalNoData`**: Agregada para cumplir con el "PASO 3" de tu código JS.
-2.  **Reducción `.percentile([50])`**: Ahora usamos esto explícitamente en lugar de `.median()`. Esto cambia el nombre de las bandas a `_p50` (ej. `ST_B10_p50`), por lo que ajusté la selección de bandas acorde a ello.
-3.  **Limpieza Morfológica**: Implementé la parte de:
-    ```javascript
-    var compCount = uhiMask.connectedPixelCount({maxSize: 1024, eightConnected: true});
-    var uhiClean = uhiMask.updateMask(compCount.gte(minPixParche)).selfMask();
+    st.markdown("### Acerca de\nAnálisis robusto de LST usando limpieza morfológica y percentiles con Google Earth Engine.")
