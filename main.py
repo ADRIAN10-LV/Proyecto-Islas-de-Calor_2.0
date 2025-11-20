@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: INTERACTIVA (Inspector de Puntos + Leyendas + Layout Mejorado)
+# Versión: FINAL CORREGIDA (Sin errores de indentación)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -11,7 +11,7 @@ import pandas as pd
 import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
-from branca.element import Template, MacroElement # Necesario para la leyenda flotante
+from branca.element import Template, MacroElement
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -99,7 +99,7 @@ def addLST(image):
            .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
     return image.addBands(lst)
 
-# --- 5. INTEGRACIÓN FOLIUM Y LEYENDAS ---
+# --- 5. INTEGRACIÓN FOLIUM ---
 def add_ee_layer(self, ee_object, vis_params, name):
     try:
         if isinstance(ee_object, ee.image.Image):
@@ -120,10 +120,7 @@ def add_ee_layer(self, ee_object, vis_params, name):
 folium.Map.add_ee_layer = add_ee_layer
 
 def add_legend(m, title, colors, vmin, vmax):
-    """Agrega una leyenda HTML flotante al mapa"""
-    # Crear gradiente CSS
     css_gradient = f"linear-gradient(to right, {', '.join(colors)})"
-    
     template = f"""
     {{% macro html(this, kwargs) %}}
     <div style="
@@ -156,7 +153,6 @@ def create_map(center=None, height=500):
         layer.add_to(m)
     return m
 
-# --- HELPER: OBTENER ROI ---
 def get_roi(locality_name):
     urban_areas = ee.FeatureCollection(ASSET_ID)
     target = urban_areas.filter(ee.Filter.eq("NOMGEO", locality_name))
@@ -192,17 +188,13 @@ def show_map_panel():
         count = col.size().getInfo()
         if count > 0:
             mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
-            
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
-            # -- CAPAS --
-            # 1. Temperatura
             viz_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
             m.add_ee_layer(lst_band, viz_lst, "1. LST (°C)")
             add_legend(m, "Temperatura LST (°C)", viz_lst['palette'], viz_lst['min'], viz_lst['max'])
             
-            # 2. Islas de Calor
             p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
             p90_val_info = 0
             if p90:
@@ -212,10 +204,8 @@ def show_map_panel():
                 uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
                 m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
             
-            # 3. NDVI
             m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
             
-            # 4. Refugios
             p95_ndvi = ndvi_band.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
             p95_ndvi_info = 0
             if p95_ndvi:
@@ -233,37 +223,24 @@ def show_map_panel():
         
         folium.LayerControl().add_to(m)
         
-        # --- INSPECTOR DE PUNTOS (CLICK) ---
-        # Capturamos el evento de clic
         map_data = st_folium(m, width="100%", height=600)
         
         if map_data and map_data.get('last_clicked'):
             clicked_lat = map_data['last_clicked']['lat']
             clicked_lng = map_data['last_clicked']['lng']
-            
-            if count > 0: # Solo si tenemos imagen
+            if count > 0:
                 point = ee.Geometry.Point([clicked_lng, clicked_lat])
-                # Extraer valores en el punto
                 values = mosaic.select(["LST_p50", "NDVI_p50"]).reduceRegion(
-                    reducer=ee.Reducer.first(),
-                    geometry=point,
-                    scale=30
+                    reducer=ee.Reducer.first(), geometry=point, scale=30
                 ).getInfo()
                 
                 val_lst = values.get('LST_p50')
                 val_ndvi = values.get('NDVI_p50')
                 
-                st.info(f"📍 **Inspector de Punto:** Lat: {clicked_lat:.4f}, Lon: {clicked_lng:.4f}")
+                st.info(f"📍 **Inspector:** Lat: {clicked_lat:.4f}, Lon: {clicked_lng:.4f}")
                 k1, k2 = st.columns(2)
-                if val_lst is not None:
-                    k1.metric("🌡️ Temperatura en punto", f"{val_lst:.2f} °C")
-                else:
-                    k1.metric("🌡️ Temperatura", "N/A (Nube/Agua)")
-                    
-                if val_ndvi is not None:
-                    k2.metric("🌿 NDVI en punto", f"{val_ndvi:.2f}")
-                else:
-                    k2.metric("🌿 NDVI", "N/A")
+                k1.metric("🌡️ Temperatura", f"{val_lst:.2f} °C" if val_lst else "N/A")
+                k2.metric("🌿 NDVI", f"{val_ndvi:.2f}" if val_ndvi else "N/A")
     else:
         st.error("Localidad no encontrada.")
 
@@ -316,10 +293,7 @@ def show_graphics_panel():
         
         def get_mean_lst(img):
             mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST") 
-            return ee.Feature(None, {
-                'date': img.date().format("YYYY-MM-dd"), 
-                'LST_mean': mean
-            })
+            return ee.Feature(None, {'date': img.date().format("YYYY-MM-dd"), 'LST_mean': mean})
         
         ts_features = col.map(get_mean_lst).filter(ee.Filter.notNull(['LST_mean'])).getInfo()['features']
         
@@ -330,9 +304,8 @@ def show_graphics_panel():
             line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
                 x=alt.X('date', title='Fecha', axis=alt.Axis(format='%Y-%m-%d')),
                 y=alt.Y('LST_mean', title='Temperatura Promedio (°C)', scale=alt.Scale(zero=False)),
-                tooltip=[alt.Tooltip('date', title='Fecha', format='%Y-%m-%d'), alt.Tooltip('LST_mean', title='Temp (°C)', format='.1f')]
+                tooltip=[alt.Tooltip('date', format='%Y-%m-%d'), alt.Tooltip('LST_mean', format='.1f')]
             ).properties(height=350).interactive()
-            
             st.altair_chart(line_chart, use_container_width=True)
         else:
             st.info("No hay suficientes puntos temporales.")
@@ -396,8 +369,6 @@ def show_comparison_panel():
                     
                     centroid = roi.centroid().coordinates().getInfo()
                     m = create_map(center=[centroid[1], centroid[0]], height=350)
-                    
-                    # Visualización estandarizada
                     viz = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
                     m.add_ee_layer(lst, viz, "Temperatura")
                     add_legend(m, f"LST {city}", viz['palette'], viz['min'], viz['max'])
@@ -417,52 +388,41 @@ def show_comparison_panel():
                         timeseries_data.append(f['properties'])
                 else:
                     st.warning("Sin datos.")
+            else:
+                st.error("Error cargando geometría.")
 
-    # --- SECCIÓN GRÁFICA SEPARADA Y ESPACIADA ---
     st.markdown("---")
-    st.subheader("📊 Gráficos Comparativos Detallados")
-    st.markdown("Comparación lado a lado de las métricas clave.")
-    st.markdown(" ") # Espacio vertical extra
+    st.subheader("📊 Resultados Comparativos")
+    st.markdown(" ")
 
     if stats_data:
         df_stats = pd.DataFrame(stats_data)
         df_ts = pd.DataFrame(timeseries_data)
         
-        # Gráfico 1: Barras (Ancho completo o dividido)
         st.markdown("##### 1. Promedios y Máximos")
         df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
-        
         bar_chart = alt.Chart(df_melt).mark_bar().encode(
             x=alt.X('Métrica', axis=None),
             y=alt.Y('Temperatura', title='Grados Celsius'),
             color='Métrica',
-            column=alt.Column('Ciudad', header=alt.Header(titleOrient="bottom", labelFontSize=12))
-        ).properties(
-            width=300, # Ancho fijo por columna para evitar superposición
-            height=300
-        ).configure_view(stroke='transparent')
-        
+            column=alt.Column('Ciudad', header=alt.Header(titleOrient="bottom"))
+        ).properties(width=300, height=300).configure_view(stroke='transparent')
         st.altair_chart(bar_chart)
         
         st.markdown("---")
         
-        # Gráfico 2: Serie de Tiempo (Ancho completo)
         if not df_ts.empty:
             st.markdown("##### 2. Evolución Temporal Simultánea")
             df_ts['date'] = pd.to_datetime(df_ts['date'])
-            
-            line_chart = alt.Chart(df_ts).mark_line(point=True, strokeWidth=2).encode(
+            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
                 x=alt.X('date', title='Fecha'),
                 y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
-                color=alt.Color('city', title='Ciudad'),
+                color='city',
                 tooltip=['date', 'city', 'val']
-            ).properties(
-                height=400 # Más altura para mejor visibilidad
-            ).interactive()
-            
+            ).properties(height=400).interactive()
             st.altair_chart(line_chart, use_container_width=True)
 
-# --- 7. NUEVO PANEL: DESCARGAS (SIN PDF) ---
+
 def show_report_panel():
     st.markdown(f"### 📥 Descarga de Datos: {st.session_state.locality}")
     if not connect_with_gee(): return
@@ -481,12 +441,10 @@ def show_report_panel():
         st.warning("No hay datos para exportar.")
         return
     
-    st.info("Generando archivos para exportación...")
+    st.info("Generando archivos...")
 
-    # Mosaico para puntos
     mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
     
-    # Datos para CSV (Serie de Tiempo)
     def get_ts_export(img):
         mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST")
         max_val = img.reduceRegion(ee.Reducer.max(), roi, 100).get("LST")
@@ -502,18 +460,13 @@ def show_report_panel():
     st.markdown("#### Datos Disponibles")
     c1, c2 = st.columns(2)
     
-    # CSV Serie de Tiempo
     if not df_ts.empty:
         csv_ts = df_ts.to_csv(index=False).encode('utf-8')
         c1.download_button(
             "📅 Descargar Serie Temporal (.csv)",
-            csv_ts,
-            f"serie_tiempo_{st.session_state.locality}.csv",
-            "text/csv",
-            key='download-csv'
+            csv_ts, f"serie_tiempo_{st.session_state.locality}.csv", "text/csv"
         )
     
-    # CSV Puntos de Muestreo (Para QGIS)
     sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=100, numPixels=500, geometries=True)
     data_sample = sample.getInfo()['features']
     if data_sample:
@@ -529,37 +482,31 @@ def show_report_panel():
         csv_sample = df_sample.to_csv(index=False).encode('utf-8')
         c2.download_button(
             "📍 Descargar Puntos Muestreo (.csv)",
-            csv_sample,
-            f"puntos_muestreo_{st.session_state.locality}.csv",
-            "text/csv",
-            key='download-points'
+            csv_sample, f"puntos_muestreo_{st.session_state.locality}.csv", "text/csv"
         )
 
-# --- 8. NUEVO PANEL: INFORMACIÓN ---
+
 def show_info_panel():
     st.markdown("""
     ### Descripción
-
     Este proyecto tiene como objetivo permitir identificar, analizar y visualizar las 
     **Islas de Calor Urbano (ICU)** en el municipio de **Teapa, Tabasco** como área de estudio principal, mediante el 
     procesamiento de imágenes satelitales (Landsat 8) y el cálculo de la 
-    **Temperatura Superficial Terrestre (LST)**.  
-    El sistema integra **Google Earth Engine**, **Python** y **Streamlit** para automatizar el 
-    análisis geoespacial y mostrar los resultados de forma interactiva.
+    **Temperatura Superficial Terrestre (LST)**.
+    
+    ---
+    ### Autores
+    - **Adrian Lara Vázquez** — Residente
+    - **Ing. Daniel Perez Flores** — Colaborador
+    - **M.I José de Jesús Lenin Valencia Cruz** — Asesor Interno
+    - **Mtro. Candelario Peralta Carreta** — Asesor Externo
 
     ---
-
-    ### Autores del desarrollo 
-    - **Adrian Lara Vázquez** — **Residente** — Estudiante de la carrera Ingeniería Informatíca del Instituto Tecnológico Superior de la Región Sierra.
-    - **Ing. Daniel Perez Flores** — **Colaborador y ayudante del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
-    - **M.I José de Jesús Lenin Valencia Cruz** — **Asesor Interno del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
-    - **Mtro. Candelario Peralta Carreta** — **Asesor Externo del proyecto** — Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS).
-
-    ---
-
-    ### Instituciones participantes
-    - **Instituto Tecnológico Superior de la Región Sierra (ITSS)** - **Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS)**
+    ### Instituciones
+    - **Instituto Tecnológico Superior de la Región Sierra (ITSS)**
+    - **Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS)**
     """)
+
 
 # --- 9. SIDEBAR ---
 with st.sidebar:
@@ -594,3 +541,4 @@ elif st.session_state.window == "Comparativa":
 elif st.session_state.window == "Descargas":
     show_report_panel()
 else:
+    show_info_panel()
