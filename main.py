@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
-# main.py — Streamlit para Islas de Calor Urbano (ICU)
-# Versión: Mapas Base
+# main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
+# Versión: LST Robusto + Análisis de Vegetación (NDVI p95)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -10,10 +10,10 @@ import folium
 from streamlit_folium import st_folium
 from pathlib import Path
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (Debe ir primero) ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="🌡️",
+    page_icon="🌱", # Cambiado a brote para reflejar vegetación
     layout="wide",
 )
 
@@ -22,42 +22,22 @@ ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
 MAX_NUBES = 30
 
 # --- MAPAS BASE ---
-# Definimos las capas base con overlay=False para que sean mutuamente excluyentes
 BASEMAPS = {
     "Google Maps": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Maps",
-        overlay=False,
-        control=True,
+        attr="Google", name="Google Maps", overlay=False, control=True,
     ),
     "Google Satellite": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Satellite",
-        overlay=False,
-        control=True,
+        attr="Google", name="Google Satellite", overlay=False, control=True,
     ),
-    "Google Terrain": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Terrain",
-        overlay=False,
-        control=True,
-    ),
-    "Google Satellite Hybrid": folium.TileLayer(
+    "Google Hybrid": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Hybrid",
-        overlay=False,
-        control=True,
+        attr="Google", name="Google Hybrid", overlay=False, control=True,
     ),
     "Esri Satellite": folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Esri Satellite",
-        overlay=False,
-        control=True,
+        attr="Esri", name="Esri Satellite", overlay=False, control=True,
     ),
 }
 
@@ -67,7 +47,6 @@ if "locality" not in st.session_state:
 if "coordinates" not in st.session_state:
     st.session_state.coordinates = (17.9895, -92.9183)
 if "date_range" not in st.session_state:
-    # Default: Época seca/cálida (Abril-Mayo)
     st.session_state.date_range = (dt.date(2024, 4, 1), dt.date(2024, 5, 30))
 if "gee_available" not in st.session_state:
     st.session_state.gee_available = False
@@ -76,8 +55,7 @@ if "window" not in st.session_state:
 
 # --- 3. CONEXIÓN GEE ---
 def connect_with_gee():
-    if st.session_state.gee_available:
-        return True
+    if st.session_state.gee_available: return True
     try:
         if 'GEE_SERVICE_ACCOUNT' in st.secrets and 'GEE_PRIVATE_KEY' in st.secrets:
             service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
@@ -86,31 +64,34 @@ def connect_with_gee():
             credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
             ee.Initialize(credentials)
             st.session_state.gee_available = True
-            st.toast("Conexión exitosa con GEE", icon="✅")
+            st.toast("Conexión GEE Establecida", icon="✅")
             return True
         else:
             ee.Initialize()
             st.session_state.gee_available = True
             return True
     except Exception as e:
-        st.error(f"Error de conexión GEE: {e}")
+        st.error(f"Error GEE: {e}")
         st.session_state.gee_available = False
         return False
 
 # --- 4. FUNCIONES DE PROCESAMIENTO ---
 
 def cloudMaskFunction(image):
+    """Máscara de nubes Landsat 8"""
     qa = image.select("QA_PIXEL")
-    cloud_shadow_bit_mask = (1 << 3)
-    cloud_bit_mask = (1 << 5)
-    mask = qa.bitwiseAnd(cloud_shadow_bit_mask).eq(0).And(
-           qa.bitwiseAnd(cloud_bit_mask).eq(0))
+    mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 5).eq(0))
     return image.updateMask(mask)
 
 def maskThermalNoData(image):
+    """Limpieza banda térmica"""
     st_band = image.select("ST_B10")
-    valid = st_band.gt(0).And(st_band.lt(65535))
-    return image.updateMask(valid)
+    return image.updateMask(st_band.gt(0).And(st_band.lt(65535)))
+
+def addNDVI(image):
+    """Calcula NDVI y lo agrega como banda nueva"""
+    ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
+    return image.addBands(ndvi)
 
 # --- 5. INTEGRACIÓN FOLIUM ---
 def add_ee_layer(self, ee_object, vis_params, name):
@@ -119,18 +100,13 @@ def add_ee_layer(self, ee_object, vis_params, name):
             map_id_dict = ee.Image(ee_object).getMapId(vis_params)
             folium.raster_layers.TileLayer(
                 tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
+                attr="Google Earth Engine", name=name, overlay=True, control=True,
             ).add_to(self)
         elif isinstance(ee_object, ee.geometry.Geometry) or isinstance(ee_object, ee.featurecollection.FeatureCollection):
             folium.GeoJson(
-                data=ee_object.getInfo(),
-                name=name,
+                data=ee_object.getInfo(), name=name,
                 style_function=lambda x: {'color': 'black', 'fillColor': 'transparent', 'weight': 2},
-                overlay=True, 
-                control=True
+                overlay=True, control=True
             ).add_to(self)
     except Exception as e:
         print(f"Error capa {name}: {e}")
@@ -138,141 +114,136 @@ def add_ee_layer(self, ee_object, vis_params, name):
 folium.Map.add_ee_layer = add_ee_layer
 
 def create_map():
-    """Crea el mapa base e inyecta todas las opciones de BASEMAPS"""
     m = folium.Map(
         location=[st.session_state.coordinates[0], st.session_state.coordinates[1]], 
-        zoom_start=13,
-        height=500,
-        tiles=None # Desactivar OSM por defecto para usar los nuestros
+        zoom_start=13, height=600, tiles=None
     )
-    
-    # Agregar todas las capas base definidas arriba
     for name, layer in BASEMAPS.items():
         layer.add_to(m)
-        
     return m
 
-# --- 6. LÓGICA PRINCIPAL DEL MAPA ---
+# --- 6. LÓGICA PRINCIPAL ---
 def show_map_panel():
-    st.markdown(f"### 🗺️ Análisis Urbano Robusto: {st.session_state.locality}")
-    st.caption("Algoritmo: Landsat 8 C2 L2 | Reducción Percentil 50 | Limpieza Morfológica")
+    st.markdown(f"### 🌿 Análisis Térmico y Vegetal: {st.session_state.locality}")
     
-    if not connect_with_gee():
-        st.warning("Sin conexión a GEE.")
-        return
-
+    if not connect_with_gee(): return
     m = create_map()
 
     try:
-        # 1. Obtener Polígono del Asset
+        # 1. ROI
         urban_areas = ee.FeatureCollection(ASSET_ID)
-        target_feature = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+        target = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
         
         roi = None
-        if target_feature.size().getInfo() > 0:
-            roi = target_feature.geometry()
+        if target.size().getInfo() > 0:
+            roi = target.geometry()
             centroid = roi.centroid().coordinates().getInfo()
             m.location = [centroid[1], centroid[0]]
             
-            # Visualizar borde AOI en Rojo
+            # Contorno AOI
             empty = ee.Image().byte()
-            outline = empty.paint(featureCollection=target_feature, color=1, width=2)
-            m.add_ee_layer(outline, {'palette': 'FF0000'}, f"AOI: {st.session_state.locality}")
+            outline = empty.paint(featureCollection=target, color=1, width=2)
+            m.add_ee_layer(outline, {'palette': '000000'}, "Límite Urbano")
         else:
-            st.error(f"Localidad '{st.session_state.locality}' no encontrada en el Asset.")
-            st.info("Usando punto central por defecto.")
+            st.error("Localidad no encontrada en Asset.")
             roi = ee.Geometry.Point([st.session_state.coordinates[1], st.session_state.coordinates[0]]).buffer(3000)
 
         if roi:
-            # 2. Parámetros
             start = st.session_state.date_range[0].strftime("%Y-%m-%d")
             end = st.session_state.date_range[1].strftime("%Y-%m-%d")
             
-            # 3. Colección y Proceso
+            # 2. Colección (LST + NDVI)
             col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
                    .filterBounds(roi)
                    .filterDate(start, end)
                    .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
                    .map(cloudMaskFunction)
-                   .map(maskThermalNoData))
+                   .map(maskThermalNoData)
+                   .map(addNDVI)) # <-- Agregamos cálculo NDVI aquí
             
             count = col.size().getInfo()
             if count > 0:
-                st.success(f"✅ Procesando {count} imágenes válidas.")
-                
-                # 4. Reducción Percentil 50
+                # 3. Reducción (Percentil 50)
+                # Genera bandas: 'ST_B10_p50', 'NDVI_p50', etc.
                 mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
                 
-                # 5. LST
-                thermal_band = mosaic.select("ST_B10_p50")
-                lst_celsius = (thermal_band.multiply(0.00341802)
-                               .add(149.0).subtract(273.15).rename("LST_Celsius"))
+                # --- PROCESAMIENTO LST (CALOR) ---
+                lst = (mosaic.select("ST_B10_p50")
+                       .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
                 
-                # Visualización LST
-                vis_params = {
-                    "min": 28, "max": 48, 
-                    "palette": ['blue', 'cyan', 'green', 'yellow', 'red']
-                }
-                m.add_ee_layer(lst_celsius, vis_params, "Temperatura Superficial (°C) p50")
+                # Capa LST
+                vis_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
+                m.add_ee_layer(lst, vis_lst, "1. Temperatura Superficial (°C)")
                 
-                # 6. UHI (Islas de Calor)
-                percentile_uhi = 90
-                stats = lst_celsius.reduceRegion(
-                    reducer=ee.Reducer.percentile([percentile_uhi]),
-                    geometry=roi, scale=30, maxPixels=1e9, bestEffort=True
-                )
+                # Islas de Calor (> p90)
+                p90_lst = lst.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST")
+                if p90_lst:
+                    val_p90 = ee.Number(p90_lst)
+                    uhi_mask = lst.gte(val_p90)
+                    # Limpieza 3px
+                    uhi_clean = uhi_mask.updateMask(uhi_mask.connectedPixelCount(100, True).gte(3)).selfMask()
+                    m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Islas de Calor (> {p90_lst.getInfo():.1f}°C)")
+
+                # --- PROCESAMIENTO NDVI (VEGETACIÓN) ---
+                ndvi = mosaic.select("NDVI_p50")
                 
-                p90_val = stats.get("LST_Celsius")
+                # Capa NDVI General
+                vis_ndvi = {"min": 0.0, "max": 0.6, "palette": ['brown', 'white', 'green']}
+                m.add_ee_layer(ndvi, vis_ndvi, "3. Índice de Vegetación (NDVI)")
                 
-                if p90_val:
-                    umbral = ee.Number(p90_val)
-                    uhi_mask = lst_celsius.gte(umbral)
+                # Zonas Más Verdes (> p95)
+                # Calculamos el percentil 95 del NDVI dentro de la ciudad
+                p95_ndvi = ndvi.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
+                
+                if p95_ndvi:
+                    val_p95_veg = ee.Number(p95_ndvi)
+                    # Máscara: NDVI mayor o igual al top 5%
+                    veg_mask = ndvi.gte(val_p95_veg).selfMask()
                     
-                    # Limpieza (connectedPixelCount)
-                    min_pix_parche = 3
-                    comp_count = uhi_mask.connectedPixelCount(maxSize=1024, eightConnected=True)
-                    uhi_clean = uhi_mask.updateMask(comp_count.gte(min_pix_parche)).selfMask()
-                    
-                    m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"Islas de Calor (≥ {p90_val.getInfo():.1f}°C)")
-                    st.metric(label="Umbral Crítico (p90)", value=f"{p90_val.getInfo():.2f} °C")
+                    # Capa de "Refugios Verdes" (Color Verde Neón)
+                    m.add_ee_layer(veg_mask, {"palette": ['#00FF00']}, f"4. Refugios Verdes (Top 5% > {p95_ndvi.getInfo():.2f})")
+                
+                # --- MÉTRICAS EN PANTALLA ---
+                st.success(f"Análisis basado en {count} imágenes.")
+                c1, c2 = st.columns(2)
+                c1.metric("🔥 Umbral Calor Crítico (p90)", f"{p90_lst.getInfo():.1f} °C")
+                if p95_ndvi:
+                    c2.metric("🌳 Umbral Alta Vegetación (p95)", f"{p95_ndvi.getInfo():.2f} NDVI")
                 
             else:
-                st.warning("No hay imágenes limpias en este rango.")
+                st.warning("Sin imágenes limpias en este periodo.")
 
     except Exception as e:
-        st.error(f"Error en procesamiento: {e}")
+        st.error(f"Error: {e}")
 
-    # Añadimos el control de capas al final para que detecte tanto los basemaps como las capas GEE
     folium.LayerControl().add_to(m)
     st_folium(m, width="100%", height=600)
 
 # --- 7. SIDEBAR ---
 with st.sidebar:
-    st.title("🔥 Tabasco Heat Watch")
+    st.title("🌱 Tabasco Heat & Green")
     st.markdown("---")
-    
     st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Info"])
     
-    st.markdown("### Selección de Zona")
     ciudades = [
-        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", 
-        "Paraíso", "Frontera", "Macuspana", "Tenosique",
-        "Huimanguillo", "Cunduacán", "Jalpa de Méndez", 
-        "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata", 
+        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
+        "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
+        "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata", 
         "Jonuta", "Balancán"
     ]
-    st.session_state.locality = st.selectbox("Ciudad / Localidad", ciudades, index=0)
+    st.session_state.locality = st.selectbox("Ciudad", ciudades)
     
-    coords_base = {"Villahermosa": (17.98, -92.92), "Teapa": (17.55, -92.95)}
-    if st.session_state.locality in coords_base:
-        st.session_state.coordinates = coords_base[st.session_state.locality]
+    # Coordenadas referenciales
+    coord_ref = {"Villahermosa": (17.98, -92.92), "Teapa": (17.55, -92.95)}
+    if st.session_state.locality in coord_ref:
+        st.session_state.coordinates = coord_ref[st.session_state.locality]
     
-    st.caption("Sugerencia: Abril-Mayo (Época Seca).")
-    fechas = st.date_input("Periodo de Análisis", value=st.session_state.date_range)
+    st.caption("Periodo (Sug.: Abril-Mayo)")
+    fechas = st.date_input("Fechas", value=st.session_state.date_range)
     if len(fechas) == 2: st.session_state.date_range = fechas
     
     st.markdown("---")
-    if st.button("Recargar Conexión"):
+    if st.button("🔄 Recargar"):
         st.session_state.gee_available = False
         st.rerun()
 
@@ -280,6 +251,6 @@ with st.sidebar:
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
-    st.info("Gráficas en desarrollo...")
+    st.info("Próximamente: Correlación LST vs NDVI")
 else:
-    st.markdown("### Acerca de\nAnálisis robusto de LST usando limpieza morfológica y percentiles.")
+    st.markdown("### Acerca de\nAnálisis cruzado de Islas de Calor y Cobertura Vegetal.")
