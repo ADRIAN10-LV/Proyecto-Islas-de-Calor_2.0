@@ -263,6 +263,7 @@ elif st.session_state.window == "Gráficas":
     st.info("Gráficas en desarrollo...")
 else:
     st.markdown("### Acerca de\nAnálisis robusto de LST usando limpieza morfológica y percentiles.")
+```
 
 ### Mejoras implementadas (Python vs JS):
 
