@@ -1,6 +1,5 @@
 # --------------------------------------------------------------
-# main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: FINAL CORREGIDA (Sin errores de indentación)
+
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -16,7 +15,7 @@ from branca.element import Template, MacroElement
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="🗺️",
+    page_icon="",
     layout="wide",
 )
 
@@ -163,7 +162,7 @@ def get_roi(locality_name):
 # --- 6. PANELES PRINCIPALES ---
 
 def show_map_panel():
-    st.markdown(f"### 🗺️ Monitor Urbano: {st.session_state.locality}")
+    st.markdown(f"### Proyecto de Residencia: {st.session_state.locality}")
     if not connect_with_gee(): return
     
     roi = get_roi(st.session_state.locality)
