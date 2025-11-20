@@ -10,18 +10,18 @@ import folium
 from streamlit_folium import st_folium
 from pathlib import Path
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (Debe ir primero) ---
+# CONFIGURACIÓN DE PÁGINA
 st.set_page_config(
     page_title="Islas de calor Tabasco",
     page_icon="🌡️",
     layout="wide",
 )
 
-# --- CONSTANTES ---
+# Carga ciudades 
 ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
 MAX_NUBES = 30
 
-# --- 2. GESTIÓN DE ESTADO ---
+# Estado inicial
 if "locality" not in st.session_state:
     st.session_state.locality = "Villahermosa"
 if "coordinates" not in st.session_state:
@@ -34,7 +34,7 @@ if "gee_available" not in st.session_state:
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
-# --- 3. CONEXIÓN GEE ---
+# CONEXIÓN GEE
 def connect_with_gee():
     if st.session_state.gee_available:
         return True
@@ -57,7 +57,7 @@ def connect_with_gee():
         st.session_state.gee_available = False
         return False
 
-# --- 4. FUNCIONES DE PROCESAMIENTO (ALGORITMO MEJORADO) ---
+# Comienza analisis ISLAS DE CALOR
 
 def cloudMaskFunction(image):
     """Enmascara nubes y sombras usando QA_PIXEL"""
@@ -74,7 +74,47 @@ def maskThermalNoData(image):
     valid = st_band.gt(0).And(st_band.lt(65535))
     return image.updateMask(valid)
 
-# --- 5. INTEGRACIÓN FOLIUM ---
+## Método para agregar las imágenes de GEE a los mapas de folium
+
+# Mapas para agregar a folium
+BASEMAPS = {
+    "Google Maps": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="Google Maps",
+        overlay=True,
+        control=True,
+    ),
+    "Google Satellite": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="Google Satellite",
+        overlay=True,
+        control=True,
+    ),
+    "Google Terrain": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="Google Terrain",
+        overlay=True,
+        control=True,
+    ),
+    "Google Satellite Hybrid": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="Google Satellite",
+        overlay=True,
+        control=True,
+    ),
+    "Esri Satellite": folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="Esri Satellite",
+        overlay=True,
+        control=True,
+    ),
+}
+
 def add_ee_layer(self, ee_object, vis_params, name):
     try:
         if isinstance(ee_object, ee.image.Image):
@@ -114,7 +154,7 @@ def create_map():
     ).add_to(m)
     return m
 
-# --- 6. LÓGICA PRINCIPAL DEL MAPA ---
+# Método para generar el mapa base
 def show_map_panel():
     st.markdown(f"### 🗺️ Análisis Urbano Robusto: {st.session_state.locality}")
     st.caption("Algoritmo: Landsat 8 C2 L2 | Reducción Percentil 50 | Limpieza Morfológica")
