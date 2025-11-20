@@ -162,7 +162,7 @@ def get_roi(locality_name):
 # --- 6. PANELES PRINCIPALES ---
 
 def show_map_panel():
-    st.markdown(f"### Proyecto de Residencia: {st.session_state.locality}")
+    st.markdown(f"### Proyecto de Residencia: Adrián Lara {st.session_state.locality}")
     if not connect_with_gee(): return
     
     roi = get_roi(st.session_state.locality)
