@@ -322,7 +322,4 @@ else:
     2. Cálculo de LST usando banda térmica B10 (Algoritmo Single Channel).
     3. Detección de anomalías térmicas usando el percentil 90 estadístico sobre la región de interés (ROI).
     """)
-    
-    *Autor: Adrian Lara*
-    """)
 
