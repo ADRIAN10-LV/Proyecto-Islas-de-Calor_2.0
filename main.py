@@ -1,19 +1,21 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: LST Robusto + Análisis de Vegetación (NDVI p95)
+# Versión: Mapas Base + Gráficos Estadísticos (Altair)
 # --------------------------------------------------------------
 
 import streamlit as st
 import ee
 import datetime as dt
 import folium
+import pandas as pd
+import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="🌱", # Cambiado a brote para reflejar vegetación
+    page_icon="📊",
     layout="wide",
 )
 
@@ -64,7 +66,6 @@ def connect_with_gee():
             credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
             ee.Initialize(credentials)
             st.session_state.gee_available = True
-            st.toast("Conexión GEE Establecida", icon="✅")
             return True
         else:
             ee.Initialize()
@@ -78,20 +79,22 @@ def connect_with_gee():
 # --- 4. FUNCIONES DE PROCESAMIENTO ---
 
 def cloudMaskFunction(image):
-    """Máscara de nubes Landsat 8"""
     qa = image.select("QA_PIXEL")
     mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 5).eq(0))
     return image.updateMask(mask)
 
 def maskThermalNoData(image):
-    """Limpieza banda térmica"""
     st_band = image.select("ST_B10")
     return image.updateMask(st_band.gt(0).And(st_band.lt(65535)))
 
 def addNDVI(image):
-    """Calcula NDVI y lo agrega como banda nueva"""
     ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
     return image.addBands(ndvi)
+
+def addLST(image):
+    lst = (image.select("ST_B10")
+           .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
+    return image.addBands(lst)
 
 # --- 5. INTEGRACIÓN FOLIUM ---
 def add_ee_layer(self, ee_object, vis_params, name):
@@ -116,112 +119,175 @@ folium.Map.add_ee_layer = add_ee_layer
 def create_map():
     m = folium.Map(
         location=[st.session_state.coordinates[0], st.session_state.coordinates[1]], 
-        zoom_start=13, height=600, tiles=None
+        zoom_start=13, height=500, tiles=None
     )
     for name, layer in BASEMAPS.items():
         layer.add_to(m)
     return m
 
-# --- 6. LÓGICA PRINCIPAL ---
+# --- HELPER: OBTENER ROI ---
+def get_roi():
+    urban_areas = ee.FeatureCollection(ASSET_ID)
+    target = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+    if target.size().getInfo() > 0:
+        return target.geometry()
+    return None
+
+# --- 6. PANELES PRINCIPALES ---
+
 def show_map_panel():
-    st.markdown(f"### 🌿 Análisis Térmico y Vegetal: {st.session_state.locality}")
-    
+    st.markdown(f"### 🗺️ Monitor Urbano: {st.session_state.locality}")
     if not connect_with_gee(): return
+    
     m = create_map()
+    roi = get_roi()
 
-    try:
-        # 1. ROI
-        urban_areas = ee.FeatureCollection(ASSET_ID)
-        target = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+    if roi:
+        centroid = roi.centroid().coordinates().getInfo()
+        m.location = [centroid[1], centroid[0]]
         
-        roi = None
-        if target.size().getInfo() > 0:
-            roi = target.geometry()
-            centroid = roi.centroid().coordinates().getInfo()
-            m.location = [centroid[1], centroid[0]]
+        # Contorno
+        empty = ee.Image().byte()
+        outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
+        m.add_ee_layer(outline, {'palette': '000000'}, "Límite Urbano")
+
+        start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+        end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+        
+        col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+               .filterBounds(roi).filterDate(start, end)
+               .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+               .map(cloudMaskFunction).map(maskThermalNoData).map(addNDVI).map(addLST))
+        
+        if col.size().getInfo() > 0:
+            mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
             
-            # Contorno AOI
-            empty = ee.Image().byte()
-            outline = empty.paint(featureCollection=target, color=1, width=2)
-            m.add_ee_layer(outline, {'palette': '000000'}, "Límite Urbano")
+            # Capas Visuales (Usamos nombres de bandas reducidas _p50)
+            lst_band = mosaic.select("LST_p50")
+            ndvi_band = mosaic.select("NDVI_p50")
+            
+            m.add_ee_layer(lst_band, {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}, "1. LST (°C)")
+            m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "2. NDVI")
+            
+            # UHI > p90
+            p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
+            if p90:
+                val_p90 = ee.Number(p90)
+                uhi = lst_band.gte(val_p90)
+                uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
+                m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"3. Hotspots (> {p90.getInfo():.1f}°C)")
         else:
-            st.error("Localidad no encontrada en Asset.")
-            roi = ee.Geometry.Point([st.session_state.coordinates[1], st.session_state.coordinates[0]]).buffer(3000)
-
-        if roi:
-            start = st.session_state.date_range[0].strftime("%Y-%m-%d")
-            end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+            st.warning("Sin imágenes limpias.")
             
-            # 2. Colección (LST + NDVI)
-            col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-                   .filterBounds(roi)
-                   .filterDate(start, end)
-                   .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-                   .map(cloudMaskFunction)
-                   .map(maskThermalNoData)
-                   .map(addNDVI)) # <-- Agregamos cálculo NDVI aquí
-            
-            count = col.size().getInfo()
-            if count > 0:
-                # 3. Reducción (Percentil 50)
-                # Genera bandas: 'ST_B10_p50', 'NDVI_p50', etc.
-                mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
-                
-                # --- PROCESAMIENTO LST (CALOR) ---
-                lst = (mosaic.select("ST_B10_p50")
-                       .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
-                
-                # Capa LST
-                vis_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
-                m.add_ee_layer(lst, vis_lst, "1. Temperatura Superficial (°C)")
-                
-                # Islas de Calor (> p90)
-                p90_lst = lst.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST")
-                if p90_lst:
-                    val_p90 = ee.Number(p90_lst)
-                    uhi_mask = lst.gte(val_p90)
-                    # Limpieza 3px
-                    uhi_clean = uhi_mask.updateMask(uhi_mask.connectedPixelCount(100, True).gte(3)).selfMask()
-                    m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Islas de Calor (> {p90_lst.getInfo():.1f}°C)")
-
-                # --- PROCESAMIENTO NDVI (VEGETACIÓN) ---
-                ndvi = mosaic.select("NDVI_p50")
-                
-                # Capa NDVI General
-                vis_ndvi = {"min": 0.0, "max": 0.6, "palette": ['brown', 'white', 'green']}
-                m.add_ee_layer(ndvi, vis_ndvi, "3. Índice de Vegetación (NDVI)")
-                
-                # Zonas Más Verdes (> p95)
-                # Calculamos el percentil 95 del NDVI dentro de la ciudad
-                p95_ndvi = ndvi.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
-                
-                if p95_ndvi:
-                    val_p95_veg = ee.Number(p95_ndvi)
-                    # Máscara: NDVI mayor o igual al top 5%
-                    veg_mask = ndvi.gte(val_p95_veg).selfMask()
-                    
-                    # Capa de "Refugios Verdes" (Color Verde Neón)
-                    m.add_ee_layer(veg_mask, {"palette": ['#00FF00']}, f"4. Refugios Verdes (Top 5% > {p95_ndvi.getInfo():.2f})")
-                
-                # --- MÉTRICAS EN PANTALLA ---
-                st.success(f"Análisis basado en {count} imágenes.")
-                c1, c2 = st.columns(2)
-                c1.metric("🔥 Umbral Calor Crítico (p90)", f"{p90_lst.getInfo():.1f} °C")
-                if p95_ndvi:
-                    c2.metric("🌳 Umbral Alta Vegetación (p95)", f"{p95_ndvi.getInfo():.2f} NDVI")
-                
-            else:
-                st.warning("Sin imágenes limpias en este periodo.")
-
-    except Exception as e:
-        st.error(f"Error: {e}")
+    else:
+        st.error("Localidad no encontrada.")
 
     folium.LayerControl().add_to(m)
     st_folium(m, width="100%", height=600)
 
+
+def show_graphics_panel():
+    st.markdown(f"### 📊 Análisis Estadístico: {st.session_state.locality}")
+    if not connect_with_gee(): return
+
+    roi = get_roi()
+    if not roi:
+        st.error("Localidad no encontrada.")
+        return
+
+    start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+    end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+
+    with st.spinner("Calculando estadísticas espaciales y temporales... (Esto puede tardar unos segundos)"):
+        # Preparar colección
+        col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+               .filterBounds(roi).filterDate(start, end)
+               .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+               .map(cloudMaskFunction).map(maskThermalNoData).map(addNDVI).map(addLST))
+        
+        count = col.size().getInfo()
+        if count == 0:
+            st.warning("No hay datos suficientes para generar gráficas.")
+            return
+
+        # 1. GRÁFICA DE DISPERSIÓN (LST vs NDVI)
+        # Muestreamos la imagen compuesta (mediana) para ver la correlación espacial
+        mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+        
+        # Extraemos 1000 puntos aleatorios dentro de la ciudad
+        sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(
+            region=roi, scale=30, numPixels=1000, geometries=False
+        )
+        
+        # Convertimos a DataFrame (Client-side)
+        data_points = sample.getInfo()['features']
+        if data_points:
+            df_scatter = pd.DataFrame([x['properties'] for x in data_points])
+            df_scatter.columns = ["LST (°C)", "NDVI"] # Renombrar para el gráfico
+            
+            # Altair Scatter Plot
+            scatter_chart = alt.Chart(df_scatter).mark_circle(size=60, opacity=0.5).encode(
+                x=alt.X('NDVI', title='Índice de Vegetación (NDVI)'),
+                y=alt.Y('LST (°C)', title='Temperatura Superficial (°C)', scale=alt.Scale(zero=False)),
+                color=alt.Color('LST (°C)', scale=alt.Scale(scheme='turbo')),
+                tooltip=['NDVI', 'LST (°C)']
+            ).properties(
+                title="Correlación: Vegetación vs. Calor",
+                height=400
+            ).interactive()
+            
+            st.altair_chart(scatter_chart, use_container_width=True)
+            
+            # Correlación simple
+            corr = df_scatter['LST (°C)'].corr(df_scatter['NDVI'])
+            st.info(f"📉 **Coeficiente de Correlación:** {corr:.2f} (Un valor cercano a -1 indica que más árboles reducen significativamente el calor).")
+
+        st.markdown("---")
+
+        # 2. SERIE DE TIEMPO (Evolución LST)
+        # Función para reducir cada imagen a un valor promedio
+        def get_mean_lst(img):
+            mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST")
+            date = img.date().format("YYYY-MM-dd")
+            return ee.Feature(None, {'date': date, 'LST_mean': mean})
+        
+        # Mapeamos sobre la colección original (sin reducir)
+        time_series = col.map(get_mean_lst).filter(ee.Filter.notNull(['LST_mean']))
+        
+        ts_info = time_series.getInfo()
+        if ts_info['features']:
+            df_ts = pd.DataFrame([x['properties'] for x in ts_info['features']])
+            df_ts['date'] = pd.to_datetime(df_ts['date'])
+            
+            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
+                x=alt.X('date', title='Fecha'),
+                y=alt.Y('LST_mean', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
+                tooltip=['date', 'LST_mean']
+            ).properties(
+                title="Evolución Temporal de la Temperatura Promedio",
+                height=350
+            ).interactive()
+            
+            st.altair_chart(line_chart, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # 3. HISTOGRAMA (Distribución de Calor)
+        if data_points: # Reutilizamos los puntos muestreados para el histograma
+            hist_chart = alt.Chart(df_scatter).mark_bar().encode(
+                x=alt.X('LST (°C)', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
+                y=alt.Y('count()', title='Frecuencia (Píxeles)'),
+                color=alt.value('orange')
+            ).properties(
+                title="Distribución de Temperaturas en la Ciudad",
+                height=300
+            )
+            st.altair_chart(hist_chart, use_container_width=True)
+
+
 # --- 7. SIDEBAR ---
 with st.sidebar:
-    st.title("🌱 Tabasco Heat & Green")
+    st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
     st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Info"])
     
@@ -233,7 +299,6 @@ with st.sidebar:
     ]
     st.session_state.locality = st.selectbox("Ciudad", ciudades)
     
-    # Coordenadas referenciales
     coord_ref = {"Villahermosa": (17.98, -92.92), "Teapa": (17.55, -92.95)}
     if st.session_state.locality in coord_ref:
         st.session_state.coordinates = coord_ref[st.session_state.locality]
@@ -251,6 +316,6 @@ with st.sidebar:
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
-    st.info("Próximamente: Correlación LST vs NDVI")
+    show_graphics_panel()
 else:
-    st.markdown("### Acerca de\nAnálisis cruzado de Islas de Calor y Cobertura Vegetal.")
+    st.markdown("### Acerca de\nPlataforma de análisis geoespacial de Islas de Calor Urbano en Tabasco.")
