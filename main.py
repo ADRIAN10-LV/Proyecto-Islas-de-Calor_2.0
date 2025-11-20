@@ -363,7 +363,7 @@ with st.sidebar:
     # Selector de sección
     section = st.radio(
         "Secciones",
-        ["Mapas", "Gráficas", "Reportes", "Acerca de"],
+        ["Información","Mapas", "Gráficas"],
         index=0,
     )
     st.session_state.window = section
@@ -391,7 +391,7 @@ with st.sidebar:
             "Paraíso",
             "Tacotalpa",
             "Teapa",
-            "Tenosique de Pino Suárez",
+            "Tenosique",
         ],
     )
 
@@ -527,7 +527,7 @@ def show_graphics_panel():
             "Balancán", "Cárdenas", "Frontera", "Villahermosa", "Comalcalco",
             "Cunduacán", "Emiliano Zapata", "Huimanguillo", "Jalapa",
             "Jalpa de Méndez", "Jonuta", "Macuspana", "Nacajuca", "Paraíso",
-            "Tacotalpa", "Teapa", "Tenosique de Pino Suárez"
+            "Tacotalpa", "Teapa", "Tenosique"
         ]
 
         modo = st.radio(
@@ -566,6 +566,35 @@ def show_graphics_panel():
             st.bar_chart(df_municipios, x="Municipio", y="LST_promedio")
 
         st.caption("Temperatura superficial promedio (°C) por cabecera municipal en el rango seleccionado.")
+
+def Información():
+    st.title("Acerca del Proyecto")
+
+    st.markdown("""
+    ### Descripción
+
+    Este proyecto tiene como objetivo permitir identificar, analizar y visualizar las 
+    **Islas de Calor Urbano (ICU)** en el municipio de **Teapa, Tabasco** como área de estudio principal, mediante el 
+    procesamiento de imágenes satelitales (Landsat 8) y el cálculo de la 
+    **Temperatura Superficial Terrestre (LST)**.  
+    El sistema integra **Google Earth Engine**, **Python** y **Streamlit** para automatizar el 
+    análisis geoespacial y mostrar los resultados de forma interactiva.
+
+    ---
+
+    ### Autores del desarrollo 
+    - **Adrian Lara Vázquez** — **Residente** — Estudiante de la carrera Ingeniería Informatíca del Instituto Tecnológico Superior de la Región Sierra.
+    - **Ing. Daniel Perez Flores** — **Colaborador y ayudante del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
+    - **M.I José de Jesús Lenin Valencia Cruz** — **Asesor Interno del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
+    - **Mtro. Candelario Peralta Carreta** — **Asesor Externo del proyecto** — Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS).
+
+    ---
+
+    ### Instituciones participantes
+    - **Instituto Tecnológico Superior de la Región Sierra (ITSS)**  
+    - **Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS)**
+    """)
+
         
 # Router de las ventanas
 match st.session_state.window:
@@ -573,7 +602,5 @@ match st.session_state.window:
         show_map_panel()
     case "Gráficas":
         show_graphics_panel()
-    case "Reportes":
-        st.write("Reportes (placeholder, ya definidos arriba)")
-    case _:
-        st.write("Acerca de (placeholder, ya definido arriba)")
+    case "Información":
+        Información()
