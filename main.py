@@ -1,213 +1,173 @@
 # --------------------------------------------------------------
-# main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Autor: Adrian Lara (estructura base generada con ayuda de IA)
+
 # --------------------------------------------------------------
 
-import sys
-import os
+import streamlit as st
 import ee
 import datetime as dt
-import streamlit as st
 import folium
 import pandas as pd
-import matplotlib.pyplot as plt
-from folium import plugins
+import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
-from dotenv import load_dotenv
+from branca.element import Template, MacroElement
 
-# Cargamos el archivo de variables de entorno
-load_dotenv()
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="Islas de calor Tabasco",
+    page_icon="",
+    layout="wide",
+)
 
-# Carpetas de trabajo
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-REPORTS_DIR = DATA_DIR / "reports"
-TEMP_DIR = DATA_DIR / "temp"
-for d in (DATA_DIR, REPORTS_DIR, TEMP_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+# --- CONSTANTES ---
+ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
+MAX_NUBES = 30
 
-# Estado inicial
+# --- MAPAS BASE ---
+BASEMAPS = {
+    "Google Maps": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        attr="Google", name="Google Maps", overlay=False, control=True,
+    ),
+    "Google Satellite": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attr="Google", name="Google Satellite", overlay=False, control=True,
+    ),
+    "Google Hybrid": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        attr="Google", name="Google Hybrid", overlay=False, control=True,
+    ),
+    "Esri Satellite": folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri", name="Esri Satellite", overlay=False, control=True,
+    ),
+}
+
+# --- 2. GESTIÓN DE ESTADO ---
 if "locality" not in st.session_state:
-    st.session_state.locality = "Teapa"  # Área de estudio
+    st.session_state.locality = "Villahermosa"
 if "coordinates" not in st.session_state:
-    st.session_state.coordinates = (17.558567, -92.948714)
-# if "latitude" not in st.session_state:
-#     st.session_state.latitude = -92.948714
-# if "longitude" not in st.session_state:
-#     st.session_state.longitude = 17.558567
+    st.session_state.coordinates = (17.9895, -92.9183)
 if "date_range" not in st.session_state:
-    st.session_state.date_range = (dt.date(2024, 1, 1), dt.datetime.now())
+    st.session_state.date_range = (dt.date(2024, 4, 1), dt.date(2024, 5, 30))
 if "gee_available" not in st.session_state:
     st.session_state.gee_available = False
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
+if "compare_cities" not in st.session_state:
+    st.session_state.compare_cities = ["Villahermosa", "Teapa"]
 
-# Coordenadas de referencia (aprox) para Teapa, Tabasco
-# COORDENADAS_INICIALES = st.session_state.coordinates  # (lat, lon)
-
-# Variable para el máximo de nubes
-MAX_NUBES = 30
-
-# Mapas para agregar a folium
-BASEMAPS = {
-    "Google Maps": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Maps",
-        overlay=True,
-        control=True,
-    ),
-    "Google Satellite": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Satellite",
-        overlay=True,
-        control=True,
-    ),
-    "Google Terrain": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Terrain",
-        overlay=True,
-        control=True,
-    ),
-    "Google Satellite Hybrid": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="Google Satellite",
-        overlay=True,
-        control=True,
-    ),
-    "Esri Satellite": folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="Esri Satellite",
-        overlay=True,
-        control=True,
-    ),
-}
-
-
+# --- 3. CONEXIÓN GEE ---
 def connect_with_gee():
-    # Importar módulos utilitarios
-    if (
-        "gee_available" not in st.session_state
-        or st.session_state.gee_available == False
-    ):
-        try:
-            ee.Authenticate()
-            ee.Initialize(project=os.getenv("GEE_PROJECT"))
-            st.toast("Google Earth Engine inicializado")
+    if st.session_state.gee_available: return True
+    try:
+        if 'GEE_SERVICE_ACCOUNT' in st.secrets and 'GEE_PRIVATE_KEY' in st.secrets:
+            service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
+            raw_key = st.secrets["GEE_PRIVATE_KEY"]
+            private_key = raw_key.strip().replace('\\n', '\n')
+            credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
+            ee.Initialize(credentials)
             st.session_state.gee_available = True
-        except Exception as e:
-            st.toast("No se pudo inicializar Google Earth Engine")
-            st.session_state.gee_available = False
-            return False
-    return True
+            return True
+        else:
+            ee.Initialize()
+            st.session_state.gee_available = True
+            return True
+    except Exception as e:
+        st.error(f"Error GEE: {e}")
+        st.session_state.gee_available = False
+        return False
 
+# --- 4. FUNCIONES DE PROCESAMIENTO ---
 
 def cloudMaskFunction(image):
     qa = image.select("QA_PIXEL")
-    cloud_mask = qa.bitwiseAnd(1 << 5)
-    shadow_mask = qa.bitwiseAnd(1 << 3)
-    combined_mask = cloud_mask.Or(shadow_mask).eq(0)
-    return image.updateMask(combined_mask)
+    mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 5).eq(0))
+    return image.updateMask(mask)
 
+def maskThermalNoData(image):
+    st_band = image.select("ST_B10")
+    return image.updateMask(st_band.gt(0).And(st_band.lt(65535)))
 
-def noThermalDataFunction(image):
-    st = image.select("ST_B10")
-    valid = st.gt(0) and (st.lt(65535))
-    return image.updateMask(valid)
+def addNDVI(image):
+    ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
+    return image.addBands(ndvi)
 
+def addLST(image):
+    lst = (image.select("ST_B10")
+           .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
+    return image.addBands(lst)
 
-def applyScale(image):
-    opticalBands = (
-        image.select(["SR_B2", "SR_B3", "SR_B4"]).multiply(0.0000275).add(-0.2)
-    )
-    return image.addBands(opticalBands, None, True)
-
-
-# Método para agregar las imágenes de GEE a los mapas de folium
+# --- 5. INTEGRACIÓN FOLIUM ---
 def add_ee_layer(self, ee_object, vis_params, name):
     try:
-        # display ee.Image()
         if isinstance(ee_object, ee.image.Image):
             map_id_dict = ee.Image(ee_object).getMapId(vis_params)
             folium.raster_layers.TileLayer(
                 tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
+                attr="Google Earth Engine", name=name, overlay=True, control=True,
             ).add_to(self)
-        # display ee.ImageCollection()
-        elif isinstance(ee_object, ee.imagecollection.ImageCollection):
-            ee_object_new = ee_object.mosaic()
-            map_id_dict = ee.Image(ee_object_new).getMapId(vis_params)
-            folium.raster_layers.TileLayer(
-                tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
-            ).add_to(self)
-        # display ee.Geometry()
-        elif isinstance(ee_object, ee.geometry.Geometry):
+        elif isinstance(ee_object, ee.geometry.Geometry) or isinstance(ee_object, ee.featurecollection.FeatureCollection):
             folium.GeoJson(
-                data=ee_object.getInfo(), name=name, overlay=True, control=True
+                data=ee_object.getInfo(), name=name,
+                style_function=lambda x: {'color': 'black', 'fillColor': 'transparent', 'weight': 2},
+                overlay=True, control=True
             ).add_to(self)
-        # display ee.FeatureCollection()
-        elif isinstance(ee_object, ee.featurecollection.FeatureCollection):
-            ee_object_new = ee.Image().paint(ee_object, 0, 2)
-            map_id_dict = ee.Image(ee_object_new).getMapId(vis_params)
-            folium.raster_layers.TileLayer(
-                tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
-            ).add_to(self)
-
-    except:
-        print("Could not display {}".format(name))
-
+    except Exception as e:
+        print(f"Error capa {name}: {e}")
 
 folium.Map.add_ee_layer = add_ee_layer
 
+def add_legend(m, title, colors, vmin, vmax):
+    css_gradient = f"linear-gradient(to right, {', '.join(colors)})"
+    template = f"""
+    {{% macro html(this, kwargs) %}}
+    <div style="
+        position: fixed; 
+        bottom: 50px; left: 50px; width: 250px; height: 85px; 
+        z-index:9999; font-size:14px;
+        background-color: rgba(255, 255, 255, 0.85);
+        padding: 10px;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        ">
+        <div style="font-weight: bold; margin-bottom: 5px;">{title}</div>
+        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #aaa;"></div>
+        <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px;">
+            <span>{vmin}</span>
+            <span>{vmax}</span>
+        </div>
+    </div>
+    {{% endmacro %}}
+    """
+    macro = MacroElement()
+    macro._template = Template(template)
+    m.get_root().add_child(macro)
 
-# Método para generar el mapa base
-def create_map(center=st.session_state.coordinates, zoom_start=13):
-    # Add EE drawing method to folium.
-    # """Crea un mapa base Folium centrado en Teapa."""
+def create_map(center=None, height=500):
+    location = center if center else [st.session_state.coordinates[0], st.session_state.coordinates[1]]
+    m = folium.Map(location=location, zoom_start=12, height=height, tiles=None)
+    for name, layer in BASEMAPS.items():
+        layer.add_to(m)
+    return m
 
-    if "folium" and "streamlit_folium" not in sys.modules:
-        st.toast("Folium no se encuentra instalado")
-        return None
+def get_roi(locality_name):
+    urban_areas = ee.FeatureCollection(ASSET_ID)
+    target = urban_areas.filter(ee.Filter.eq("NOMGEO", locality_name))
+    if target.size().getInfo() > 0:
+        return target.geometry()
+    return None
 
-    map = folium.Map(st.session_state.coordinates, zoom_start=zoom_start, height=500)
+# --- 6. PANELES PRINCIPALES ---
 
-    return map
-
-
-def set_coordinates():
-    if st.session_state.gee_available == True:
-        roi = (
-            ee.FeatureCollection(os.getenv("GEE_LOCALITIES_ASSET"))
-            .filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
-            .geometry()
-        )
-
-        st.session_state.coordinates = (
-            roi.centroid().coordinates().getInfo()[-1],
-            roi.centroid().coordinates().getInfo()[0],
-        )
-
-# Método para mostrar el panel del mapa
 def show_map_panel():
-    st.markdown("Islas de calor por localidades de Tabasco")
-    st.caption("Visualización de LST desde Google Earth Engine.")
+    st.markdown(f"### Proyecto de Residencia: Islas de Calor {st.session_state.locality}")
+    if not connect_with_gee(): return
+    
+    roi = get_roi(st.session_state.locality)
 
+<<<<<<< HEAD
     map = create_map()
     if map == None:
         return
@@ -604,3 +564,379 @@ match st.session_state.window:
         show_graphics_panel()
     case "Información":
         Información()
+=======
+    if roi:
+        m = create_map()
+        centroid = roi.centroid().coordinates().getInfo()
+        m.location = [centroid[1], centroid[0]]
+        
+        empty = ee.Image().byte()
+        outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
+        m.add_ee_layer(outline, {'palette': '000000'}, "Límite Urbano")
+
+        start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+        end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+        
+        col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+               .filterBounds(roi).filterDate(start, end)
+               .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+               .map(cloudMaskFunction).map(maskThermalNoData).map(addNDVI).map(addLST))
+        
+        count = col.size().getInfo()
+        if count > 0:
+            mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+            lst_band = mosaic.select("LST_p50")
+            ndvi_band = mosaic.select("NDVI_p50")
+            
+            viz_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
+            m.add_ee_layer(lst_band, viz_lst, "1. LST (°C)")
+            add_legend(m, "Temperatura LST (°C)", viz_lst['palette'], viz_lst['min'], viz_lst['max'])
+            
+            p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
+            p90_val_info = 0
+            if p90:
+                val_p90 = ee.Number(p90)
+                p90_val_info = p90.getInfo()
+                uhi = lst_band.gte(val_p90)
+                uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
+                m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
+            
+            m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
+            
+            p95_ndvi = ndvi_band.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
+            p95_ndvi_info = 0
+            if p95_ndvi:
+                val_p95 = ee.Number(p95_ndvi)
+                p95_ndvi_info = p95_ndvi.getInfo()
+                veg_mask = ndvi_band.gte(val_p95).selfMask()
+                m.add_ee_layer(veg_mask, {"palette": ['#00FF00']}, f"4. Refugios Verdes (> {p95_ndvi_info:.2f})")
+
+            st.success(f"Análisis basado en {count} imágenes procesadas.")
+            c1, c2 = st.columns(2)
+            c1.metric("🔥 Umbral Calor Crítico (p90)", f"{p90_val_info:.2f} °C")
+            c2.metric("🌳 Umbral Alta Vegetación (p95)", f"{p95_ndvi_info:.2f} NDVI")
+        else:
+            st.warning("Sin imágenes limpias en este periodo.")
+        
+        folium.LayerControl().add_to(m)
+        
+        map_data = st_folium(m, width="100%", height=600)
+        
+        if map_data and map_data.get('last_clicked'):
+            clicked_lat = map_data['last_clicked']['lat']
+            clicked_lng = map_data['last_clicked']['lng']
+            if count > 0:
+                point = ee.Geometry.Point([clicked_lng, clicked_lat])
+                values = mosaic.select(["LST_p50", "NDVI_p50"]).reduceRegion(
+                    reducer=ee.Reducer.first(), geometry=point, scale=30
+                ).getInfo()
+                
+                val_lst = values.get('LST_p50')
+                val_ndvi = values.get('NDVI_p50')
+                
+                st.info(f"📍 **Inspector:** Lat: {clicked_lat:.4f}, Lon: {clicked_lng:.4f}")
+                k1, k2 = st.columns(2)
+                k1.metric("🌡️ Temperatura", f"{val_lst:.2f} °C" if val_lst else "N/A")
+                k2.metric("🌿 NDVI", f"{val_ndvi:.2f}" if val_ndvi else "N/A")
+    else:
+        st.error("Localidad no encontrada.")
+
+
+def show_graphics_panel():
+    st.markdown(f"### 📊 Análisis Estadístico: {st.session_state.locality}")
+    if not connect_with_gee(): return
+    roi = get_roi(st.session_state.locality)
+    if not roi: return
+
+    start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+    end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+
+    col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterBounds(roi).filterDate(start, end)
+            .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+            .map(cloudMaskFunction).map(maskThermalNoData).map(addLST).map(addNDVI))
+    
+    if col.size().getInfo() == 0:
+        st.warning("No hay datos suficientes.")
+        return
+
+    with st.spinner("Calculando estadísticas..."):
+        mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+        sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=30, numPixels=1000, geometries=False)
+        data = sample.getInfo()['features']
+        
+        if data:
+            df = pd.DataFrame([x['properties'] for x in data])
+            
+            st.markdown("#### 1. Correlación Calor vs. Vegetación")
+            chart = alt.Chart(df).mark_circle(size=60, opacity=0.6).encode(
+                x=alt.X('NDVI_p50', title='Índice de Vegetación (NDVI)'),
+                y=alt.Y('LST_p50', title='Temperatura (°C)', scale=alt.Scale(zero=False)),
+                color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo')),
+                tooltip=['NDVI_p50', 'LST_p50']
+            ).properties(height=350).interactive()
+            st.altair_chart(chart, use_container_width=True)
+            
+            st.markdown("#### 2. Distribución de Temperaturas")
+            hist = alt.Chart(df).mark_bar().encode(
+                x=alt.X('LST_p50', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
+                y=alt.Y('count()', title='Frecuencia'),
+                color=alt.value('#ffaa00')
+            ).properties(height=300)
+            st.altair_chart(hist, use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("#### 3. Tendencia Histórica (Serie de Tiempo)")
+        
+        def get_mean_lst(img):
+            mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST") 
+            return ee.Feature(None, {'date': img.date().format("YYYY-MM-dd"), 'LST_mean': mean})
+        
+        ts_features = col.map(get_mean_lst).filter(ee.Filter.notNull(['LST_mean'])).getInfo()['features']
+        
+        if ts_features:
+            df_ts = pd.DataFrame([x['properties'] for x in ts_features])
+            df_ts['date'] = pd.to_datetime(df_ts['date'])
+            
+            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
+                x=alt.X('date', title='Fecha', axis=alt.Axis(format='%Y-%m-%d')),
+                y=alt.Y('LST_mean', title='Temperatura Promedio (°C)', scale=alt.Scale(zero=False)),
+                tooltip=[alt.Tooltip('date', format='%Y-%m-%d'), alt.Tooltip('LST_mean', format='.1f')]
+            ).properties(height=350).interactive()
+            st.altair_chart(line_chart, use_container_width=True)
+        else:
+            st.info("No hay suficientes puntos temporales.")
+
+
+def show_comparison_panel():
+    st.markdown("### ⚖️ Comparativa de Ciudades")
+    if not connect_with_gee(): return
+
+    ciudades_disp = [
+        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
+        "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
+        "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata"
+    ]
+    
+    selected = st.multiselect(
+        "Selecciona 2 ciudades:", 
+        ciudades_disp, 
+        default=st.session_state.compare_cities[:2],
+        max_selections=2
+    )
+
+    if len(selected) != 2:
+        st.info("Selecciona exactamente 2 ciudades.")
+        return
+
+    start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+    end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+    
+    stats_data = []
+    timeseries_data = []
+
+    c1, c2 = st.columns(2)
+    cols = [c1, c2]
+
+    for idx, city in enumerate(selected):
+        with cols[idx]:
+            st.subheader(f"📍 {city}")
+            roi = get_roi(city)
+            
+            if roi:
+                col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                       .filterBounds(roi).filterDate(start, end)
+                       .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+                       .map(cloudMaskFunction).map(maskThermalNoData).map(addLST))
+                
+                if col.size().getInfo() > 0:
+                    mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+                    lst = mosaic.select("LST_p50")
+                    
+                    stats = lst.reduceRegion(
+                        reducer=ee.Reducer.mean().combine(reducer2=ee.Reducer.max(), sharedInputs=True),
+                        geometry=roi, scale=100, bestEffort=True
+                    ).getInfo()
+                    
+                    stats_data.append({
+                        "Ciudad": city,
+                        "LST Promedio (°C)": stats.get("LST_p50_mean"),
+                        "LST Máxima (°C)": stats.get("LST_p50_max")
+                    })
+                    
+                    centroid = roi.centroid().coordinates().getInfo()
+                    m = create_map(center=[centroid[1], centroid[0]], height=350)
+                    viz = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
+                    m.add_ee_layer(lst, viz, "Temperatura")
+                    add_legend(m, f"LST {city}", viz['palette'], viz['min'], viz['max'])
+                    
+                    empty = ee.Image().byte()
+                    outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
+                    m.add_ee_layer(outline, {'palette': 'black'}, "Límite")
+                    
+                    st_folium(m, width="100%", height=350, key=f"map_{city}")
+                    
+                    def get_ts(img):
+                        mean_val = img.reduceRegion(ee.Reducer.mean(), roi, 200).get("LST")
+                        return ee.Feature(None, {'date': img.date().format("YYYY-MM-dd"), 'val': mean_val, 'city': city})
+                    
+                    ts_feats = col.map(get_ts).filter(ee.Filter.notNull(['val'])).getInfo()['features']
+                    for f in ts_feats:
+                        timeseries_data.append(f['properties'])
+                else:
+                    st.warning("Sin datos.")
+            else:
+                st.error("Error cargando geometría.")
+
+    st.markdown("---")
+    st.subheader("📊 Resultados Comparativos")
+    st.markdown(" ")
+
+    if stats_data:
+        df_stats = pd.DataFrame(stats_data)
+        df_ts = pd.DataFrame(timeseries_data)
+        
+        st.markdown("##### 1. Promedios y Máximos")
+        df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
+        bar_chart = alt.Chart(df_melt).mark_bar().encode(
+            x=alt.X('Métrica', axis=None),
+            y=alt.Y('Temperatura', title='Grados Celsius'),
+            color='Métrica',
+            column=alt.Column('Ciudad', header=alt.Header(titleOrient="bottom"))
+        ).properties(width=300, height=300).configure_view(stroke='transparent')
+        st.altair_chart(bar_chart)
+        
+        st.markdown("---")
+        
+        if not df_ts.empty:
+            st.markdown("##### 2. Evolución Temporal Simultánea")
+            df_ts['date'] = pd.to_datetime(df_ts['date'])
+            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
+                x=alt.X('date', title='Fecha'),
+                y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
+                color='city',
+                tooltip=['date', 'city', 'val']
+            ).properties(height=400).interactive()
+            st.altair_chart(line_chart, use_container_width=True)
+
+
+def show_report_panel():
+    st.markdown(f"### 📥 Descarga de Datos: {st.session_state.locality}")
+    if not connect_with_gee(): return
+    roi = get_roi(st.session_state.locality)
+    if not roi: return
+
+    start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+    end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+
+    col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterBounds(roi).filterDate(start, end)
+            .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+            .map(cloudMaskFunction).map(maskThermalNoData).map(addLST).map(addNDVI))
+
+    if col.size().getInfo() == 0:
+        st.warning("No hay datos para exportar.")
+        return
+    
+    st.info("Generando archivos...")
+
+    mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+    
+    def get_ts_export(img):
+        mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST")
+        max_val = img.reduceRegion(ee.Reducer.max(), roi, 100).get("LST")
+        return ee.Feature(None, {
+            'Fecha': img.date().format("YYYY-MM-dd"), 
+            'LST_Promedio': mean,
+            'LST_Maxima': max_val
+        })
+    
+    ts_export = col.map(get_ts_export).filter(ee.Filter.notNull(['LST_Promedio'])).getInfo()['features']
+    df_ts = pd.DataFrame([x['properties'] for x in ts_export])
+
+    st.markdown("#### Datos Disponibles")
+    c1, c2 = st.columns(2)
+    
+    if not df_ts.empty:
+        csv_ts = df_ts.to_csv(index=False).encode('utf-8')
+        c1.download_button(
+            "📅 Descargar Serie Temporal (.csv)",
+            csv_ts, f"serie_tiempo_{st.session_state.locality}.csv", "text/csv"
+        )
+    
+    sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=100, numPixels=500, geometries=True)
+    data_sample = sample.getInfo()['features']
+    if data_sample:
+        rows = []
+        for feat in data_sample:
+            props = feat['properties']
+            coords = feat['geometry']['coordinates']
+            rows.append({
+                "Lon": coords[0], "Lat": coords[1], 
+                "LST_C": props.get("LST_p50"), "NDVI": props.get("NDVI_p50")
+            })
+        df_sample = pd.DataFrame(rows)
+        csv_sample = df_sample.to_csv(index=False).encode('utf-8')
+        c2.download_button(
+            "📍 Descargar Puntos Muestreo (.csv)",
+            csv_sample, f"puntos_muestreo_{st.session_state.locality}.csv", "text/csv"
+        )
+
+
+def show_info_panel():
+    st.markdown("""
+    ### Descripción
+    Este proyecto tiene como objetivo permitir identificar, analizar y visualizar las 
+    **Islas de Calor Urbano (ICU)** en el municipio de **Teapa, Tabasco** como área de estudio principal, mediante el 
+    procesamiento de imágenes satelitales (Landsat 8) y el cálculo de la 
+    **Temperatura Superficial Terrestre (LST)**.
+    
+    ---
+    ### Autores
+    - **Adrian Lara Vázquez** — Residente
+    - **Ing. Daniel Perez Flores** — Colaborador
+    - **M.I José de Jesús Lenin Valencia Cruz** — Asesor Interno
+    - **Mtro. Candelario Peralta Carreta** — Asesor Externo
+
+    ---
+    ### Instituciones
+    - **Instituto Tecnológico Superior de la Región Sierra (ITSS)**
+    - **Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS)**
+    """)
+
+
+# --- 9. SIDEBAR ---
+with st.sidebar:
+    st.title("APLICACIÓN WEB PARA EL ANÁLISIS TÉRMICO URBANO EN TEAPA CON LANDSAT 8 USANDO PYTHON Y GOOGLE EARTH ENGINE")
+    st.markdown("---")
+    st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Comparativa", "Descargas", "Info"])
+    
+    if st.session_state.window != "Comparativa":
+        ciudades = [
+            "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
+            "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
+            "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata"
+        ]
+        st.session_state.locality = st.selectbox("Ciudad Principal", ciudades)
+    
+    st.caption("Periodo de Análisis")
+    fechas = st.date_input("Fechas", value=st.session_state.date_range)
+    if len(fechas) == 2: st.session_state.date_range = fechas
+    
+    st.markdown("---")
+    if st.button("🔄 Recargar"):
+        st.session_state.gee_available = False
+        st.rerun()
+
+# --- 10. ROUTER ---
+if st.session_state.window == "Mapas":
+    show_map_panel()
+elif st.session_state.window == "Gráficas":
+    show_graphics_panel()
+elif st.session_state.window == "Comparativa":
+    show_comparison_panel()
+elif st.session_state.window == "Descargas":
+    show_report_panel()
+else:
+    show_info_panel()
+>>>>>>> 0cd58a8ab27ed53b33f2f11119cb2eec3cec2352
