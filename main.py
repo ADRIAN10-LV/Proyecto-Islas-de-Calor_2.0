@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: COMPLETA (Mapas Base, NDVI p95, Gráficas, Comparador)
+# Versión: COMPLETA FINAL (Mapas, NDVI, Comparador + Serie Temporal)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -23,7 +23,7 @@ st.set_page_config(
 ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
 MAX_NUBES = 30
 
-# --- MAPAS BASE (Todos disponibles en el control de capas) ---
+# --- MAPAS BASE ---
 BASEMAPS = {
     "Google Maps": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
@@ -119,14 +119,10 @@ def add_ee_layer(self, ee_object, vis_params, name):
 folium.Map.add_ee_layer = add_ee_layer
 
 def create_map(center=None, height=500):
-    """Crea el mapa e inyecta TODOS los basemaps para el selector"""
     location = center if center else [st.session_state.coordinates[0], st.session_state.coordinates[1]]
     m = folium.Map(location=location, zoom_start=12, height=height, tiles=None)
-    
-    # Agregar todas las capas base
     for name, layer in BASEMAPS.items():
         layer.add_to(m)
-        
     return m
 
 # --- HELPER: OBTENER ROI ---
@@ -167,14 +163,11 @@ def show_map_panel():
         if count > 0:
             mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
             
-            # -- VARIABLES --
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
-            # -- CAPA 1: LST (Calor) --
             m.add_ee_layer(lst_band, {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}, "1. LST (°C)")
             
-            # -- CAPA 2: Islas de Calor (>p90) --
             p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
             p90_val_info = 0
             if p90:
@@ -184,10 +177,8 @@ def show_map_panel():
                 uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
                 m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
             
-            # -- CAPA 3: NDVI (Vegetación General) --
             m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
             
-            # -- CAPA 4: Refugios Verdes (>p95) --
             p95_ndvi = ndvi_band.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
             p95_ndvi_info = 0
             if p95_ndvi:
@@ -196,12 +187,10 @@ def show_map_panel():
                 veg_mask = ndvi_band.gte(val_p95).selfMask()
                 m.add_ee_layer(veg_mask, {"palette": ['#00FF00']}, f"4. Refugios Verdes (> {p95_ndvi_info:.2f})")
 
-            # -- MÉTRICAS EN PANTALLA --
             st.success(f"Análisis basado en {count} imágenes procesadas.")
             c1, c2 = st.columns(2)
             c1.metric("🔥 Umbral Calor Crítico (p90)", f"{p90_val_info:.2f} °C")
             c2.metric("🌳 Umbral Alta Vegetación (p95)", f"{p95_ndvi_info:.2f} NDVI")
-
         else:
             st.warning("Sin imágenes limpias en este periodo.")
         
@@ -220,6 +209,7 @@ def show_graphics_panel():
     start = st.session_state.date_range[0].strftime("%Y-%m-%d")
     end = st.session_state.date_range[1].strftime("%Y-%m-%d")
 
+    # Colección con todas las bandas calculadas
     col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
             .filterBounds(roi).filterDate(start, end)
             .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
@@ -229,27 +219,61 @@ def show_graphics_panel():
         st.warning("No hay datos suficientes.")
         return
 
-    # 1. Scatter
-    mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
-    sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=30, numPixels=1000, geometries=False)
-    data = sample.getInfo()['features']
-    if data:
-        df = pd.DataFrame([x['properties'] for x in data])
-        chart = alt.Chart(df).mark_circle(size=60, opacity=0.5).encode(
-            x=alt.X('NDVI_p50', title='Índice de Vegetación (NDVI)'),
-            y=alt.Y('LST_p50', title='Temperatura Superficial (°C)', scale=alt.Scale(zero=False)),
-            color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo')),
-            tooltip=['NDVI_p50', 'LST_p50']
-        ).properties(title="Correlación LST vs NDVI", height=400).interactive()
-        st.altair_chart(chart, use_container_width=True)
+    with st.spinner("Calculando estadísticas..."):
+        # 1. SCATTER PLOT (Muestreo)
+        mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+        sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=30, numPixels=1000, geometries=False)
+        data = sample.getInfo()['features']
         
-        # Histograma
-        hist = alt.Chart(df).mark_bar().encode(
-            x=alt.X('LST_p50', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
-            y='count()',
-            color=alt.value('orange')
-        ).properties(title="Distribución de Temperaturas")
-        st.altair_chart(hist, use_container_width=True)
+        if data:
+            df = pd.DataFrame([x['properties'] for x in data])
+            
+            # Scatter
+            st.markdown("#### 1. Correlación Calor vs. Vegetación")
+            chart = alt.Chart(df).mark_circle(size=60, opacity=0.6).encode(
+                x=alt.X('NDVI_p50', title='Índice de Vegetación (NDVI)'),
+                y=alt.Y('LST_p50', title='Temperatura (°C)', scale=alt.Scale(zero=False)),
+                color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo')),
+                tooltip=['NDVI_p50', 'LST_p50']
+            ).properties(height=350).interactive()
+            st.altair_chart(chart, use_container_width=True)
+            
+            # Histograma
+            st.markdown("#### 2. Distribución de Temperaturas")
+            hist = alt.Chart(df).mark_bar().encode(
+                x=alt.X('LST_p50', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
+                y=alt.Y('count()', title='Frecuencia'),
+                color=alt.value('#ffaa00')
+            ).properties(height=300)
+            st.altair_chart(hist, use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("#### 3. Tendencia Histórica (Serie de Tiempo)")
+        
+        # 2. SERIE DE TIEMPO (Reducción por imagen)
+        def get_mean_lst(img):
+            mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST") # Escala 100 para rapidez
+            return ee.Feature(None, {
+                'date': img.date().format("YYYY-MM-dd"), 
+                'LST_mean': mean
+            })
+        
+        # Mapear reducción sobre la colección
+        ts_features = col.map(get_mean_lst).filter(ee.Filter.notNull(['LST_mean'])).getInfo()['features']
+        
+        if ts_features:
+            df_ts = pd.DataFrame([x['properties'] for x in ts_features])
+            df_ts['date'] = pd.to_datetime(df_ts['date'])
+            
+            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
+                x=alt.X('date', title='Fecha', axis=alt.Axis(format='%Y-%m-%d')),
+                y=alt.Y('LST_mean', title='Temperatura Promedio (°C)', scale=alt.Scale(zero=False)),
+                tooltip=[alt.Tooltip('date', title='Fecha', format='%Y-%m-%d'), alt.Tooltip('LST_mean', title='Temp (°C)', format='.1f')]
+            ).properties(height=350).interactive()
+            
+            st.altair_chart(line_chart, use_container_width=True)
+        else:
+            st.info("No hay suficientes puntos temporales válidos para graficar la tendencia.")
 
 
 def show_comparison_panel():
@@ -263,7 +287,7 @@ def show_comparison_panel():
     ]
     
     selected = st.multiselect(
-        "Selecciona 2 ciudades para comparar:", 
+        "Selecciona 2 ciudades:", 
         ciudades_disp, 
         default=st.session_state.compare_cities[:2],
         max_selections=2
@@ -309,9 +333,7 @@ def show_comparison_panel():
                     })
                     
                     centroid = roi.centroid().coordinates().getInfo()
-                    # Usamos create_map aquí también para tener los basemaps disponibles en el comparador si se desea
                     m = create_map(center=[centroid[1], centroid[0]], height=350)
-                    
                     m.add_ee_layer(lst, {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}, "Temperatura")
                     empty = ee.Image().byte()
                     outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
@@ -326,7 +348,6 @@ def show_comparison_panel():
                     ts_feats = col.map(get_ts).filter(ee.Filter.notNull(['val'])).getInfo()['features']
                     for f in ts_feats:
                         timeseries_data.append(f['properties'])
-
                 else:
                     st.warning("Sin datos.")
 
@@ -338,7 +359,6 @@ def show_comparison_panel():
         df_ts = pd.DataFrame(timeseries_data)
         
         gc1, gc2 = st.columns(2)
-        
         with gc1:
             df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
             bar_chart = alt.Chart(df_melt).mark_bar().encode(
