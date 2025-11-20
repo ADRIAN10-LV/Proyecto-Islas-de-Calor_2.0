@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: Mapas Base + Gráficos + COMPARADOR (2 Ciudades)
+# Versión: COMPLETA (Mapas Base, NDVI p95, Gráficas, Comparador)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -15,7 +15,7 @@ from pathlib import Path
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="⚖️", # Icono de balanza para comparación
+    page_icon="🗺️",
     layout="wide",
 )
 
@@ -23,8 +23,16 @@ st.set_page_config(
 ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
 MAX_NUBES = 30
 
-# --- MAPAS BASE ---
+# --- MAPAS BASE (Todos disponibles en el control de capas) ---
 BASEMAPS = {
+    "Google Maps": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        attr="Google", name="Google Maps", overlay=False, control=True,
+    ),
+    "Google Satellite": folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attr="Google", name="Google Satellite", overlay=False, control=True,
+    ),
     "Google Hybrid": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google", name="Google Hybrid", overlay=False, control=True,
@@ -46,7 +54,6 @@ if "gee_available" not in st.session_state:
     st.session_state.gee_available = False
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
-# Estado para el comparador
 if "compare_cities" not in st.session_state:
     st.session_state.compare_cities = ["Villahermosa", "Teapa"]
 
@@ -111,10 +118,15 @@ def add_ee_layer(self, ee_object, vis_params, name):
 
 folium.Map.add_ee_layer = add_ee_layer
 
-def create_map(center=None):
+def create_map(center=None, height=500):
+    """Crea el mapa e inyecta TODOS los basemaps para el selector"""
     location = center if center else [st.session_state.coordinates[0], st.session_state.coordinates[1]]
-    m = folium.Map(location=location, zoom_start=12, height=400, tiles=None)
-    BASEMAPS["Google Hybrid"].add_to(m)
+    m = folium.Map(location=location, zoom_start=12, height=height, tiles=None)
+    
+    # Agregar todas las capas base
+    for name, layer in BASEMAPS.items():
+        layer.add_to(m)
+        
     return m
 
 # --- HELPER: OBTENER ROI ---
@@ -151,25 +163,47 @@ def show_map_panel():
                .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
                .map(cloudMaskFunction).map(maskThermalNoData).map(addNDVI).map(addLST))
         
-        if col.size().getInfo() > 0:
+        count = col.size().getInfo()
+        if count > 0:
             mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
             
-            # Capas Visuales
+            # -- VARIABLES --
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
+            # -- CAPA 1: LST (Calor) --
             m.add_ee_layer(lst_band, {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}, "1. LST (°C)")
-            m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "2. NDVI")
             
-            # UHI > p90
+            # -- CAPA 2: Islas de Calor (>p90) --
             p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
+            p90_val_info = 0
             if p90:
                 val_p90 = ee.Number(p90)
+                p90_val_info = p90.getInfo()
                 uhi = lst_band.gte(val_p90)
                 uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
-                m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"3. Hotspots (> {p90.getInfo():.1f}°C)")
+                m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
+            
+            # -- CAPA 3: NDVI (Vegetación General) --
+            m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
+            
+            # -- CAPA 4: Refugios Verdes (>p95) --
+            p95_ndvi = ndvi_band.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
+            p95_ndvi_info = 0
+            if p95_ndvi:
+                val_p95 = ee.Number(p95_ndvi)
+                p95_ndvi_info = p95_ndvi.getInfo()
+                veg_mask = ndvi_band.gte(val_p95).selfMask()
+                m.add_ee_layer(veg_mask, {"palette": ['#00FF00']}, f"4. Refugios Verdes (> {p95_ndvi_info:.2f})")
+
+            # -- MÉTRICAS EN PANTALLA --
+            st.success(f"Análisis basado en {count} imágenes procesadas.")
+            c1, c2 = st.columns(2)
+            c1.metric("🔥 Umbral Calor Crítico (p90)", f"{p90_val_info:.2f} °C")
+            c2.metric("🌳 Umbral Alta Vegetación (p95)", f"{p95_ndvi_info:.2f} NDVI")
+
         else:
-            st.warning("Sin imágenes limpias.")
+            st.warning("Sin imágenes limpias en este periodo.")
         
         folium.LayerControl().add_to(m)
         st_folium(m, width="100%", height=600)
@@ -201,18 +235,27 @@ def show_graphics_panel():
     data = sample.getInfo()['features']
     if data:
         df = pd.DataFrame([x['properties'] for x in data])
-        chart = alt.Chart(df).mark_circle(size=60).encode(
-            x='NDVI_p50', y='LST_p50', color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo'))
-        ).properties(title="Correlación LST vs NDVI").interactive()
+        chart = alt.Chart(df).mark_circle(size=60, opacity=0.5).encode(
+            x=alt.X('NDVI_p50', title='Índice de Vegetación (NDVI)'),
+            y=alt.Y('LST_p50', title='Temperatura Superficial (°C)', scale=alt.Scale(zero=False)),
+            color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo')),
+            tooltip=['NDVI_p50', 'LST_p50']
+        ).properties(title="Correlación LST vs NDVI", height=400).interactive()
         st.altair_chart(chart, use_container_width=True)
+        
+        # Histograma
+        hist = alt.Chart(df).mark_bar().encode(
+            x=alt.X('LST_p50', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
+            y='count()',
+            color=alt.value('orange')
+        ).properties(title="Distribución de Temperaturas")
+        st.altair_chart(hist, use_container_width=True)
 
 
-# --- 7. NUEVO PANEL: COMPARATIVA ---
 def show_comparison_panel():
     st.markdown("### ⚖️ Comparativa de Ciudades")
     if not connect_with_gee(): return
 
-    # 1. Selector Múltiple
     ciudades_disp = [
         "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
         "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
@@ -227,17 +270,15 @@ def show_comparison_panel():
     )
 
     if len(selected) != 2:
-        st.info("Por favor selecciona exactamente 2 ciudades para iniciar la comparación.")
+        st.info("Selecciona exactamente 2 ciudades.")
         return
 
     start = st.session_state.date_range[0].strftime("%Y-%m-%d")
     end = st.session_state.date_range[1].strftime("%Y-%m-%d")
     
-    # Contenedores de datos para graficar luego
     stats_data = []
     timeseries_data = []
 
-    # Layout de Mapas (Columnas)
     c1, c2 = st.columns(2)
     cols = [c1, c2]
 
@@ -247,18 +288,15 @@ def show_comparison_panel():
             roi = get_roi(city)
             
             if roi:
-                # Procesamiento Express
                 col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
                        .filterBounds(roi).filterDate(start, end)
                        .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
                        .map(cloudMaskFunction).map(maskThermalNoData).map(addLST))
                 
                 if col.size().getInfo() > 0:
-                    # MAPA
                     mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
                     lst = mosaic.select("LST_p50")
                     
-                    # Estadísticas Globales
                     stats = lst.reduceRegion(
                         reducer=ee.Reducer.mean().combine(reducer2=ee.Reducer.max(), sharedInputs=True),
                         geometry=roi, scale=100, bestEffort=True
@@ -270,21 +308,17 @@ def show_comparison_panel():
                         "LST Máxima (°C)": stats.get("LST_p50_max")
                     })
                     
-                    # Crear Mapa Miniatura
                     centroid = roi.centroid().coordinates().getInfo()
-                    m = create_map(center=[centroid[1], centroid[0]])
-                    # Estandarizamos visualización para comparar peras con peras
-                    vis_params = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
-                    m.add_ee_layer(lst, vis_params, "Temperatura")
+                    # Usamos create_map aquí también para tener los basemaps disponibles en el comparador si se desea
+                    m = create_map(center=[centroid[1], centroid[0]], height=350)
                     
-                    # Borde
+                    m.add_ee_layer(lst, {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}, "Temperatura")
                     empty = ee.Image().byte()
                     outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
                     m.add_ee_layer(outline, {'palette': 'black'}, "Límite")
                     
                     st_folium(m, width="100%", height=350, key=f"map_{city}")
                     
-                    # Datos para serie de tiempo (Simplificado)
                     def get_ts(img):
                         mean_val = img.reduceRegion(ee.Reducer.mean(), roi, 200).get("LST")
                         return ee.Feature(None, {'date': img.date().format("YYYY-MM-dd"), 'val': mean_val, 'city': city})
@@ -294,12 +328,10 @@ def show_comparison_panel():
                         timeseries_data.append(f['properties'])
 
                 else:
-                    st.warning("Sin datos para este periodo.")
-            else:
-                st.error("Geometría no encontrada.")
+                    st.warning("Sin datos.")
 
     st.markdown("---")
-    st.subheader("📊 Gráficos Comparativos")
+    st.subheader("📊 Resultados")
 
     if stats_data:
         df_stats = pd.DataFrame(stats_data)
@@ -308,34 +340,19 @@ def show_comparison_panel():
         gc1, gc2 = st.columns(2)
         
         with gc1:
-            st.markdown("**Comparativa de Temperaturas**")
-            # Transformar para gráfico agrupado
             df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
-            
             bar_chart = alt.Chart(df_melt).mark_bar().encode(
-                x=alt.X('Métrica', axis=None),
-                y=alt.Y('Temperatura', title='Grados Celsius'),
-                color='Métrica',
-                column='Ciudad',
-                tooltip=['Ciudad', 'Métrica', alt.Tooltip('Temperatura', format='.1f')]
+                x=alt.X('Métrica', axis=None), y='Temperatura', color='Métrica', column='Ciudad'
             ).properties(height=300)
-            st.altair_chart(bar_chart)
+            st.altair_chart(bar_chart, use_container_width=True)
             
         with gc2:
             if not df_ts.empty:
-                st.markdown("**Evolución Temporal Simultánea**")
                 df_ts['date'] = pd.to_datetime(df_ts['date'])
-                
                 line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
-                    x='date',
-                    y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
-                    color='city',
-                    tooltip=['date', 'city', 'val']
+                    x='date', y=alt.Y('val', scale=alt.Scale(zero=False)), color='city'
                 ).properties(height=300).interactive()
                 st.altair_chart(line_chart, use_container_width=True)
-            else:
-                st.info("No hay suficientes datos temporales para graficar.")
-
 
 # --- 8. SIDEBAR ---
 with st.sidebar:
