@@ -440,7 +440,33 @@ def show_report_panel():
             key='download-points'
         )
 
-# --- 8. SIDEBAR ---
+# --- 8. NUEVO PANEL: INFORMACIÓN ---
+def show_info_panel():
+    st.markdown("""
+    ### Descripción
+
+    Este proyecto tiene como objetivo permitir identificar, analizar y visualizar las 
+    **Islas de Calor Urbano (ICU)** en el municipio de **Teapa, Tabasco** como área de estudio principal, mediante el 
+    procesamiento de imágenes satelitales (Landsat 8) y el cálculo de la 
+    **Temperatura Superficial Terrestre (LST)**.  
+    El sistema integra **Google Earth Engine**, **Python** y **Streamlit** para automatizar el 
+    análisis geoespacial y mostrar los resultados de forma interactiva.
+
+    ---
+
+    ### Autores del desarrollo 
+    - **Adrian Lara Vázquez** — **Residente** — Estudiante de la carrera Ingeniería Informatíca del Instituto Tecnológico Superior de la Región Sierra.
+    - **Ing. Daniel Perez Flores** — **Colaborador y ayudante del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
+    - **M.I José de Jesús Lenin Valencia Cruz** — **Asesor Interno del proyecto** — Maestro e Ingeniero Informatíco del Instituto Tecnológico Superior de la Región Sierra.
+    - **Mtro. Candelario Peralta Carreta** — **Asesor Externo del proyecto** — Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS).
+
+    ---
+
+    ### Instituciones participantes
+    - **Instituto Tecnológico Superior de la Región Sierra (ITSS)** - **Centro del Cambio Global y la Sustentabilidad en el Sureste A.C. (CCGSS)**
+    """)
+
+# --- 9. SIDEBAR ---
 with st.sidebar:
     st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
@@ -463,7 +489,7 @@ with st.sidebar:
         st.session_state.gee_available = False
         st.rerun()
 
-# --- 9. ROUTER ---
+# --- 10. ROUTER ---
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
@@ -473,4 +499,4 @@ elif st.session_state.window == "Comparativa":
 elif st.session_state.window == "Descargas":
     show_report_panel()
 else:
-    st.markdown("### Acerca de\nPlataforma integral de monitoreo térmico urbano.")
+    show_info_panel()
