@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: FINAL ESTABLE (Solo Descargas CSV - Sin PDF)
+# Versión: INTERACTIVA (Inspector de Puntos + Leyendas + Layout Mejorado)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -11,6 +11,7 @@ import pandas as pd
 import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
+from branca.element import Template, MacroElement # Necesario para la leyenda flotante
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -98,7 +99,7 @@ def addLST(image):
            .multiply(0.00341802).add(149.0).subtract(273.15).rename("LST"))
     return image.addBands(lst)
 
-# --- 5. INTEGRACIÓN FOLIUM ---
+# --- 5. INTEGRACIÓN FOLIUM Y LEYENDAS ---
 def add_ee_layer(self, ee_object, vis_params, name):
     try:
         if isinstance(ee_object, ee.image.Image):
@@ -117,6 +118,36 @@ def add_ee_layer(self, ee_object, vis_params, name):
         print(f"Error capa {name}: {e}")
 
 folium.Map.add_ee_layer = add_ee_layer
+
+def add_legend(m, title, colors, vmin, vmax):
+    """Agrega una leyenda HTML flotante al mapa"""
+    # Crear gradiente CSS
+    css_gradient = f"linear-gradient(to right, {', '.join(colors)})"
+    
+    template = f"""
+    {{% macro html(this, kwargs) %}}
+    <div style="
+        position: fixed; 
+        bottom: 50px; left: 50px; width: 250px; height: 85px; 
+        z-index:9999; font-size:14px;
+        background-color: rgba(255, 255, 255, 0.85);
+        padding: 10px;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        ">
+        <div style="font-weight: bold; margin-bottom: 5px;">{title}</div>
+        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #aaa;"></div>
+        <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px;">
+            <span>{vmin}</span>
+            <span>{vmax}</span>
+        </div>
+    </div>
+    {{% endmacro %}}
+    """
+    macro = MacroElement()
+    macro._template = Template(template)
+    m.get_root().add_child(macro)
 
 def create_map(center=None, height=500):
     location = center if center else [st.session_state.coordinates[0], st.session_state.coordinates[1]]
@@ -165,8 +196,13 @@ def show_map_panel():
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
-            m.add_ee_layer(lst_band, {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}, "1. LST (°C)")
+            # -- CAPAS --
+            # 1. Temperatura
+            viz_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
+            m.add_ee_layer(lst_band, viz_lst, "1. LST (°C)")
+            add_legend(m, "Temperatura LST (°C)", viz_lst['palette'], viz_lst['min'], viz_lst['max'])
             
+            # 2. Islas de Calor
             p90 = lst_band.reduceRegion(ee.Reducer.percentile([90]), roi, 30).get("LST_p50")
             p90_val_info = 0
             if p90:
@@ -176,8 +212,10 @@ def show_map_panel():
                 uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
                 m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
             
+            # 3. NDVI
             m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
             
+            # 4. Refugios
             p95_ndvi = ndvi_band.reduceRegion(ee.Reducer.percentile([95]), roi, 30).get("NDVI_p50")
             p95_ndvi_info = 0
             if p95_ndvi:
@@ -194,7 +232,38 @@ def show_map_panel():
             st.warning("Sin imágenes limpias en este periodo.")
         
         folium.LayerControl().add_to(m)
-        st_folium(m, width="100%", height=600)
+        
+        # --- INSPECTOR DE PUNTOS (CLICK) ---
+        # Capturamos el evento de clic
+        map_data = st_folium(m, width="100%", height=600)
+        
+        if map_data and map_data.get('last_clicked'):
+            clicked_lat = map_data['last_clicked']['lat']
+            clicked_lng = map_data['last_clicked']['lng']
+            
+            if count > 0: # Solo si tenemos imagen
+                point = ee.Geometry.Point([clicked_lng, clicked_lat])
+                # Extraer valores en el punto
+                values = mosaic.select(["LST_p50", "NDVI_p50"]).reduceRegion(
+                    reducer=ee.Reducer.first(),
+                    geometry=point,
+                    scale=30
+                ).getInfo()
+                
+                val_lst = values.get('LST_p50')
+                val_ndvi = values.get('NDVI_p50')
+                
+                st.info(f"📍 **Inspector de Punto:** Lat: {clicked_lat:.4f}, Lon: {clicked_lng:.4f}")
+                k1, k2 = st.columns(2)
+                if val_lst is not None:
+                    k1.metric("🌡️ Temperatura en punto", f"{val_lst:.2f} °C")
+                else:
+                    k1.metric("🌡️ Temperatura", "N/A (Nube/Agua)")
+                    
+                if val_ndvi is not None:
+                    k2.metric("🌿 NDVI en punto", f"{val_ndvi:.2f}")
+                else:
+                    k2.metric("🌿 NDVI", "N/A")
     else:
         st.error("Localidad no encontrada.")
 
@@ -327,7 +396,12 @@ def show_comparison_panel():
                     
                     centroid = roi.centroid().coordinates().getInfo()
                     m = create_map(center=[centroid[1], centroid[0]], height=350)
-                    m.add_ee_layer(lst, {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}, "Temperatura")
+                    
+                    # Visualización estandarizada
+                    viz = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
+                    m.add_ee_layer(lst, viz, "Temperatura")
+                    add_legend(m, f"LST {city}", viz['palette'], viz['min'], viz['max'])
+                    
                     empty = ee.Image().byte()
                     outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
                     m.add_ee_layer(outline, {'palette': 'black'}, "Límite")
@@ -344,28 +418,49 @@ def show_comparison_panel():
                 else:
                     st.warning("Sin datos.")
 
+    # --- SECCIÓN GRÁFICA SEPARADA Y ESPACIADA ---
     st.markdown("---")
-    st.subheader("📊 Resultados")
+    st.subheader("📊 Gráficos Comparativos Detallados")
+    st.markdown("Comparación lado a lado de las métricas clave.")
+    st.markdown(" ") # Espacio vertical extra
 
     if stats_data:
         df_stats = pd.DataFrame(stats_data)
         df_ts = pd.DataFrame(timeseries_data)
         
-        gc1, gc2 = st.columns(2)
-        with gc1:
-            df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
-            bar_chart = alt.Chart(df_melt).mark_bar().encode(
-                x=alt.X('Métrica', axis=None), y='Temperatura', color='Métrica', column='Ciudad'
-            ).properties(height=300)
-            st.altair_chart(bar_chart, use_container_width=True)
+        # Gráfico 1: Barras (Ancho completo o dividido)
+        st.markdown("##### 1. Promedios y Máximos")
+        df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
+        
+        bar_chart = alt.Chart(df_melt).mark_bar().encode(
+            x=alt.X('Métrica', axis=None),
+            y=alt.Y('Temperatura', title='Grados Celsius'),
+            color='Métrica',
+            column=alt.Column('Ciudad', header=alt.Header(titleOrient="bottom", labelFontSize=12))
+        ).properties(
+            width=300, # Ancho fijo por columna para evitar superposición
+            height=300
+        ).configure_view(stroke='transparent')
+        
+        st.altair_chart(bar_chart)
+        
+        st.markdown("---")
+        
+        # Gráfico 2: Serie de Tiempo (Ancho completo)
+        if not df_ts.empty:
+            st.markdown("##### 2. Evolución Temporal Simultánea")
+            df_ts['date'] = pd.to_datetime(df_ts['date'])
             
-        with gc2:
-            if not df_ts.empty:
-                df_ts['date'] = pd.to_datetime(df_ts['date'])
-                line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
-                    x='date', y=alt.Y('val', scale=alt.Scale(zero=False)), color='city'
-                ).properties(height=300).interactive()
-                st.altair_chart(line_chart, use_container_width=True)
+            line_chart = alt.Chart(df_ts).mark_line(point=True, strokeWidth=2).encode(
+                x=alt.X('date', title='Fecha'),
+                y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
+                color=alt.Color('city', title='Ciudad'),
+                tooltip=['date', 'city', 'val']
+            ).properties(
+                height=400 # Más altura para mejor visibilidad
+            ).interactive()
+            
+            st.altair_chart(line_chart, use_container_width=True)
 
 # --- 7. NUEVO PANEL: DESCARGAS (SIN PDF) ---
 def show_report_panel():
@@ -499,4 +594,3 @@ elif st.session_state.window == "Comparativa":
 elif st.session_state.window == "Descargas":
     show_report_panel()
 else:
-    show_info_panel()
