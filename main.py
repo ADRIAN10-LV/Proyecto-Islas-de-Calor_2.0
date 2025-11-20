@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: Conexión Directa (Compatible con tus Secrets actuales)
+# Versión: Integración con Asset de Polígonos (areas_urbanas_Tab)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -9,20 +9,24 @@ import datetime as dt
 import folium
 from streamlit_folium import st_folium
 from pathlib import Path
-import os
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (Siempre va primero) ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
     page_icon="🌡️",
     layout="wide",
 )
 
+# --- CONSTANTES ---
+# Asset ID proporcionado por el usuario
+ASSET_ID = "projects/ee-cando/assets/areas_urbanas_Tab"
+MAX_NUBES = 30
+
 # --- 2. GESTIÓN DE ESTADO ---
 if "locality" not in st.session_state:
-    st.session_state.locality = "Teapa"
+    st.session_state.locality = "Villahermosa" # Default
 if "coordinates" not in st.session_state:
-    st.session_state.coordinates = (17.558567, -92.948714)
+    st.session_state.coordinates = (17.9895, -92.9183) # Default Villahermosa
 if "date_range" not in st.session_state:
     st.session_state.date_range = (dt.date(2024, 1, 1), dt.date.today())
 if "gee_available" not in st.session_state:
@@ -30,49 +34,33 @@ if "gee_available" not in st.session_state:
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
 
-MAX_NUBES = 30
-
-# --- 3. FUNCIONES DE CONEXIÓN ---
+# --- 3. CONEXIÓN GEE ---
 def connect_with_gee():
-    """Conecta usando GEE_SERVICE_ACCOUNT y GEE_PRIVATE_KEY de tus secrets"""
+    """Conecta usando Secrets"""
     if st.session_state.gee_available:
         return True
 
     try:
-        # Verificamos que las claves existan en los secretos
         if 'GEE_SERVICE_ACCOUNT' in st.secrets and 'GEE_PRIVATE_KEY' in st.secrets:
             service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
             raw_key = st.secrets["GEE_PRIVATE_KEY"]
-            
-            # Limpieza de la clave (quita espacios extra y arregla saltos de línea)
-            private_key = raw_key.strip()
-            if '\\n' in private_key:
-                private_key = private_key.replace('\\n', '\n')
-                
+            private_key = raw_key.strip().replace('\\n', '\n')
             credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
             ee.Initialize(credentials)
-            
             st.session_state.gee_available = True
-            st.toast("¡Conexión a Google Earth Engine exitosa!", icon="✅")
+            st.toast("Conexión exitosa con GEE", icon="✅")
             return True
         else:
-            # Si no encuentra las claves específicas, intenta inicialización local
-            try:
-                ee.Initialize()
-                st.session_state.gee_available = True
-                return True
-            except:
-                st.error("Faltan 'GEE_SERVICE_ACCOUNT' o 'GEE_PRIVATE_KEY' en secrets.toml")
-                # Ayuda para depurar: Mostrar qué claves sí detecta (sin mostrar valores)
-                st.caption(f"Claves detectadas en secrets: {list(st.secrets.keys())}")
-                return False
-
+            # Intento local (fallback)
+            ee.Initialize()
+            st.session_state.gee_available = True
+            return True
     except Exception as e:
-        st.error(f"Error de credenciales: {e}")
+        st.error(f"Error de conexión GEE: {e}")
         st.session_state.gee_available = False
         return False
 
-# --- 4. FUNCIONES DE PROCESAMIENTO GEE ---
+# --- 4. FUNCIONES DE PROCESAMIENTO ---
 def cloudMaskFunction(image):
     qa = image.select("QA_PIXEL")
     cloud_mask = qa.bitwiseAnd(1 << 5)
@@ -97,19 +85,16 @@ def add_ee_layer(self, ee_object, vis_params, name):
                 overlay=True,
                 control=True,
             ).add_to(self)
-        elif isinstance(ee_object, ee.imagecollection.ImageCollection):
-            ee_object_new = ee_object.mosaic()
-            map_id_dict = ee.Image(ee_object_new).getMapId(vis_params)
-            folium.raster_layers.TileLayer(
-                tiles=map_id_dict["tile_fetcher"].url_format,
-                attr="Google Earth Engine",
-                name=name,
-                overlay=True,
-                control=True,
-            ).add_to(self)
-        elif isinstance(ee_object, ee.geometry.Geometry):
+        elif isinstance(ee_object, ee.geometry.Geometry) or isinstance(ee_object, ee.featurecollection.FeatureCollection):
+            # Para geometrías, usamos GeoJson de Folium para que se vea el borde
+            # Ojo: getInfo() puede ser pesado si la geometría es muy compleja, 
+            # pero para polígonos urbanos suele estar bien.
             folium.GeoJson(
-                data=ee_object.getInfo(), name=name, overlay=True, control=True
+                data=ee_object.getInfo(),
+                name=name,
+                style_function=lambda x: {'color': 'black', 'fillColor': 'transparent', 'weight': 2},
+                overlay=True, 
+                control=True
             ).add_to(self)
     except Exception as e:
         print(f"Error capa {name}: {e}")
@@ -131,107 +116,145 @@ def create_map():
     ).add_to(m)
     return m
 
-# --- 6. INTERFAZ DE USUARIO (PANELES) ---
-def set_coordinates():
-    coords = {
-        "Villahermosa": (17.9895, -92.9183), "Teapa": (17.558567, -92.948714),
-        "Cárdenas": (17.9869, -93.3750), "Comalcalco": (18.2631, -93.2119),
-        "Paraíso": (18.3981, -93.2150), "Frontera": (18.5333, -92.65),
-        "Macuspana": (17.7581, -92.5989), "Tenosique": (17.4742, -91.4269)
-    }
-    if st.session_state.locality in coords:
-        st.session_state.coordinates = coords[st.session_state.locality]
-
+# --- 6. LÓGICA PRINCIPAL DEL MAPA ---
 def show_map_panel():
-    st.markdown(f"### 🗺️ Monitor de Calor: {st.session_state.locality}")
+    st.markdown(f"### 🗺️ Análisis Urbano: {st.session_state.locality}")
     
     if not connect_with_gee():
-        st.warning("No hay conexión a GEE. Mostrando mapa base.")
-        m = create_map()
-        st_folium(m, width="100%", height=600)
+        st.warning("Sin conexión a GEE.")
         return
 
-    # Si conecta, procesamos:
+    m = create_map()
+
     try:
-        m = create_map()
+        # 1. Obtener el POLÍGONO exacto del Asset
+        # Cargamos la colección completa
+        urban_areas = ee.FeatureCollection(ASSET_ID)
         
-        # 1. Definir ROI (Region of Interest)
+        # Filtramos por el nombre seleccionado (Columna NOMGEO)
+        target_feature = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+        
+        # Verificamos si existe el polígono
+        info_size = target_feature.size().getInfo()
+        
         roi = None
-        # Intentar obtener Asset si existe variable
-        asset_id = st.secrets.get("env", {}).get("GEE_LOCALITIES_ASSET")
-        if asset_id:
-            try:
-                fc = ee.FeatureCollection(asset_id)
-                roi = fc.filter(ee.Filter.eq("NOMGEO", st.session_state.locality)).geometry()
-                # Centrar mapa
-                center = roi.centroid().coordinates().getInfo()
-                m.location = [center[1], center[0]]
-            except:
-                pass
-        
-        # Fallback si no hay asset
-        if not roi:
-            lat, lon = st.session_state.coordinates
-            roi = ee.Geometry.Point([lon, lat]).buffer(5000)
-
-        # 2. Cargar Landsat 8
-        start = st.session_state.date_range[0].strftime("%Y-%m-%d")
-        end = st.session_state.date_range[1].strftime("%Y-%m-%d")
-        
-        col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-               .filterDate(start, end)
-               .filterBounds(roi)
-               .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-               .map(cloudMaskFunction)
-               .map(noThermalDataFunction))
-
-        if col.size().getInfo() > 0:
-            img = col.median().clip(roi)
+        if info_size > 0:
+            # Obtener geometría
+            roi = target_feature.geometry()
             
-            # LST Celsius
-            lst = (img.select("ST_B10").multiply(0.00341802)
-                   .add(149.0).subtract(273.15).rename("LST_Celsius"))
+            # Centrar el mapa en el polígono automáticamente
+            centroid = roi.centroid().coordinates().getInfo()
+            m.location = [centroid[1], centroid[0]] # Folium usa [Lat, Lon]
             
-            vis = {"min": 24, "max": 40, "palette": ["blue", "cyan", "green", "yellow", "red"]}
-            m.add_ee_layer(lst, vis, "Temperatura (°C)")
+            # Dibujar el contorno del polígono en el mapa
+            # Usamos paint() para convertir FeatureCollection a Imagen de bordes
+            empty = ee.Image().byte()
+            outline = empty.paint(
+                featureCollection=target_feature,
+                color=1,
+                width=2
+            )
+            m.add_ee_layer(outline, {'palette': 'FF0000'}, "Límite Urbano")
+            st.success(f"Polígono cargado: {st.session_state.locality}")
             
-            # Hotspots > P90
-            stats = lst.reduceRegion(ee.Reducer.percentile([90]), roi, 30)
-            p90 = stats.get("LST_Celsius")
-            if p90:
-                hotspots = lst.gte(ee.Number(p90)).selfMask()
-                m.add_ee_layer(hotspots, {"palette": ["#d7301f"]}, "Puntos Calientes (>P90)")
         else:
-            st.info(f"No se encontraron imágenes limpias para {st.session_state.locality} en estas fechas.")
+            st.error(f"No se encontró la ciudad '{st.session_state.locality}' en el asset '{ASSET_ID}'.")
+            st.caption("Intenta seleccionar otra ciudad o verifica los nombres en la columna NOMGEO de tu asset.")
+            # Fallback a punto central si falla
+            roi = ee.Geometry.Point([st.session_state.coordinates[1], st.session_state.coordinates[0]]).buffer(3000)
 
-        folium.LayerControl().add_to(m)
-        st_folium(m, width="100%", height=600)
+        # 2. Procesar Imágenes SOLO dentro del ROI
+        if roi:
+            start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+            end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+            
+            col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                   .filterDate(start, end)
+                   .filterBounds(roi)  # Filtro espacial clave
+                   .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+                   .map(cloudMaskFunction)
+                   .map(noThermalDataFunction))
+
+            count = col.size().getInfo()
+            if count > 0:
+                # Reducir colección a una imagen (Mediana) y RECORTAR al polígono
+                img = col.median().clip(roi)
+                
+                # Cálculo LST (Celsius)
+                lst = (img.select("ST_B10").multiply(0.00341802)
+                       .add(149.0).subtract(273.15).rename("LST_Celsius"))
+                
+                vis_params = {
+                    "min": 24, 
+                    "max": 42, 
+                    "palette": ["blue", "cyan", "green", "yellow", "orange", "red"]
+                }
+                m.add_ee_layer(lst, vis_params, "Temperatura Superficial (°C)")
+                
+                # Hotspots: Zonas por encima del percentil 90 DE ESTE POLÍGONO
+                stats = lst.reduceRegion(
+                    reducer=ee.Reducer.percentile([90]),
+                    geometry=roi,
+                    scale=30,
+                    bestEffort=True
+                )
+                p90 = stats.get("LST_Celsius")
+                
+                if p90:
+                    val_p90 = ee.Number(p90)
+                    hotspots = lst.gte(val_p90).selfMask()
+                    m.add_ee_layer(hotspots, {"palette": ["black"]}, "Puntos Críticos (>P90)")
+                    st.caption(f"🔥 Umbral de calor crítico calculado para esta zona: > {p90.getInfo():.1f}°C")
+            else:
+                st.warning("No se encontraron imágenes limpias en este periodo.")
 
     except Exception as e:
-        st.error(f"Error procesando mapa: {e}")
+        st.error(f"Error procesando asset o GEE: {e}")
 
-# --- 7. LAYOUT PRINCIPAL ---
+    folium.LayerControl().add_to(m)
+    st_folium(m, width="100%", height=600)
+
+# --- 7. LAYOUT LATERAL ---
 with st.sidebar:
     st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
+    
     st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Info"])
     
-    st.markdown("### Configuración")
-    st.session_state.locality = st.selectbox("Municipio", 
-        ["Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", "Frontera", "Macuspana", "Tenosique"])
-    set_coordinates()
+    st.markdown("### Selección de Zona")
     
-    fechas = st.date_input("Periodo", value=st.session_state.date_range)
+    # LISTA DE MUNICIPIOS: 
+    # IMPORTANTE: Estos nombres deben coincidir EXACTAMENTE con la columna NOMGEO de tu asset
+    ciudades = [
+        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", 
+        "Paraíso", "Frontera", "Macuspana", "Tenosique",
+        "Huimanguillo", "Cunduacán", "Jalpa de Méndez", 
+        "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata", 
+        "Jonuta", "Balancán"
+    ]
+    
+    st.session_state.locality = st.selectbox("Ciudad / Localidad", ciudades, index=0)
+    
+    # Coordenadas base solo para centrado inicial (luego el asset las sobrescribe)
+    # Diccionario simplificado para referencia rápida
+    coords_base = {
+        "Villahermosa": (17.98, -92.92),
+        "Teapa": (17.55, -92.95)
+    }
+    if st.session_state.locality in coords_base:
+        st.session_state.coordinates = coords_base[st.session_state.locality]
+    
+    fechas = st.date_input("Periodo de Análisis", value=st.session_state.date_range)
     if len(fechas) == 2: st.session_state.date_range = fechas
     
     st.markdown("---")
-    if st.button("Reconectar"):
+    if st.button("Recargar Conexión"):
         st.session_state.gee_available = False
         st.rerun()
 
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
-    st.info("Gráficas en construcción...")
+    st.info("Gráficas en desarrollo...")
 else:
-    st.markdown("### Acerca de\nMonitor de islas de calor urbano usando Landsat 8.")
+    st.markdown("### Acerca de\nAnálisis de LST usando polígonos urbanos oficiales.")
