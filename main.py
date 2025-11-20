@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: Mapas Base + Gráficos Estadísticos (Altair)
+# Versión: Mapas Base + Gráficos + COMPARADOR (2 Ciudades)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -15,7 +15,7 @@ from pathlib import Path
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="📊",
+    page_icon="⚖️", # Icono de balanza para comparación
     layout="wide",
 )
 
@@ -25,14 +25,6 @@ MAX_NUBES = 30
 
 # --- MAPAS BASE ---
 BASEMAPS = {
-    "Google Maps": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google", name="Google Maps", overlay=False, control=True,
-    ),
-    "Google Satellite": folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attr="Google", name="Google Satellite", overlay=False, control=True,
-    ),
     "Google Hybrid": folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google", name="Google Hybrid", overlay=False, control=True,
@@ -54,6 +46,9 @@ if "gee_available" not in st.session_state:
     st.session_state.gee_available = False
 if "window" not in st.session_state:
     st.session_state.window = "Mapas"
+# Estado para el comparador
+if "compare_cities" not in st.session_state:
+    st.session_state.compare_cities = ["Villahermosa", "Teapa"]
 
 # --- 3. CONEXIÓN GEE ---
 def connect_with_gee():
@@ -116,19 +111,16 @@ def add_ee_layer(self, ee_object, vis_params, name):
 
 folium.Map.add_ee_layer = add_ee_layer
 
-def create_map():
-    m = folium.Map(
-        location=[st.session_state.coordinates[0], st.session_state.coordinates[1]], 
-        zoom_start=13, height=500, tiles=None
-    )
-    for name, layer in BASEMAPS.items():
-        layer.add_to(m)
+def create_map(center=None):
+    location = center if center else [st.session_state.coordinates[0], st.session_state.coordinates[1]]
+    m = folium.Map(location=location, zoom_start=12, height=400, tiles=None)
+    BASEMAPS["Google Hybrid"].add_to(m)
     return m
 
 # --- HELPER: OBTENER ROI ---
-def get_roi():
+def get_roi(locality_name):
     urban_areas = ee.FeatureCollection(ASSET_ID)
-    target = urban_areas.filter(ee.Filter.eq("NOMGEO", st.session_state.locality))
+    target = urban_areas.filter(ee.Filter.eq("NOMGEO", locality_name))
     if target.size().getInfo() > 0:
         return target.geometry()
     return None
@@ -139,10 +131,10 @@ def show_map_panel():
     st.markdown(f"### 🗺️ Monitor Urbano: {st.session_state.locality}")
     if not connect_with_gee(): return
     
-    m = create_map()
-    roi = get_roi()
+    roi = get_roi(st.session_state.locality)
 
     if roi:
+        m = create_map()
         centroid = roi.centroid().coordinates().getInfo()
         m.location = [centroid[1], centroid[0]]
         
@@ -162,7 +154,7 @@ def show_map_panel():
         if col.size().getInfo() > 0:
             mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
             
-            # Capas Visuales (Usamos nombres de bandas reducidas _p50)
+            # Capas Visuales
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
@@ -178,132 +170,188 @@ def show_map_panel():
                 m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"3. Hotspots (> {p90.getInfo():.1f}°C)")
         else:
             st.warning("Sin imágenes limpias.")
-            
+        
+        folium.LayerControl().add_to(m)
+        st_folium(m, width="100%", height=600)
     else:
         st.error("Localidad no encontrada.")
-
-    folium.LayerControl().add_to(m)
-    st_folium(m, width="100%", height=600)
 
 
 def show_graphics_panel():
     st.markdown(f"### 📊 Análisis Estadístico: {st.session_state.locality}")
     if not connect_with_gee(): return
-
-    roi = get_roi()
-    if not roi:
-        st.error("Localidad no encontrada.")
-        return
+    roi = get_roi(st.session_state.locality)
+    if not roi: return
 
     start = st.session_state.date_range[0].strftime("%Y-%m-%d")
     end = st.session_state.date_range[1].strftime("%Y-%m-%d")
 
-    with st.spinner("Calculando estadísticas espaciales y temporales... (Esto puede tardar unos segundos)"):
-        # Preparar colección
-        col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-               .filterBounds(roi).filterDate(start, end)
-               .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
-               .map(cloudMaskFunction).map(maskThermalNoData).map(addNDVI).map(addLST))
-        
-        count = col.size().getInfo()
-        if count == 0:
-            st.warning("No hay datos suficientes para generar gráficas.")
-            return
+    col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterBounds(roi).filterDate(start, end)
+            .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+            .map(cloudMaskFunction).map(maskThermalNoData).map(addLST).map(addNDVI))
+    
+    if col.size().getInfo() == 0:
+        st.warning("No hay datos suficientes.")
+        return
 
-        # 1. GRÁFICA DE DISPERSIÓN (LST vs NDVI)
-        # Muestreamos la imagen compuesta (mediana) para ver la correlación espacial
-        mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
-        
-        # Extraemos 1000 puntos aleatorios dentro de la ciudad
-        sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(
-            region=roi, scale=30, numPixels=1000, geometries=False
-        )
-        
-        # Convertimos a DataFrame (Client-side)
-        data_points = sample.getInfo()['features']
-        if data_points:
-            df_scatter = pd.DataFrame([x['properties'] for x in data_points])
-            df_scatter.columns = ["LST (°C)", "NDVI"] # Renombrar para el gráfico
-            
-            # Altair Scatter Plot
-            scatter_chart = alt.Chart(df_scatter).mark_circle(size=60, opacity=0.5).encode(
-                x=alt.X('NDVI', title='Índice de Vegetación (NDVI)'),
-                y=alt.Y('LST (°C)', title='Temperatura Superficial (°C)', scale=alt.Scale(zero=False)),
-                color=alt.Color('LST (°C)', scale=alt.Scale(scheme='turbo')),
-                tooltip=['NDVI', 'LST (°C)']
-            ).properties(
-                title="Correlación: Vegetación vs. Calor",
-                height=400
-            ).interactive()
-            
-            st.altair_chart(scatter_chart, use_container_width=True)
-            
-            # Correlación simple
-            corr = df_scatter['LST (°C)'].corr(df_scatter['NDVI'])
-            st.info(f"📉 **Coeficiente de Correlación:** {corr:.2f} (Un valor cercano a -1 indica que más árboles reducen significativamente el calor).")
-
-        st.markdown("---")
-
-        # 2. SERIE DE TIEMPO (Evolución LST)
-        # Función para reducir cada imagen a un valor promedio
-        def get_mean_lst(img):
-            mean = img.reduceRegion(ee.Reducer.mean(), roi, 100).get("LST")
-            date = img.date().format("YYYY-MM-dd")
-            return ee.Feature(None, {'date': date, 'LST_mean': mean})
-        
-        # Mapeamos sobre la colección original (sin reducir)
-        time_series = col.map(get_mean_lst).filter(ee.Filter.notNull(['LST_mean']))
-        
-        ts_info = time_series.getInfo()
-        if ts_info['features']:
-            df_ts = pd.DataFrame([x['properties'] for x in ts_info['features']])
-            df_ts['date'] = pd.to_datetime(df_ts['date'])
-            
-            line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
-                x=alt.X('date', title='Fecha'),
-                y=alt.Y('LST_mean', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
-                tooltip=['date', 'LST_mean']
-            ).properties(
-                title="Evolución Temporal de la Temperatura Promedio",
-                height=350
-            ).interactive()
-            
-            st.altair_chart(line_chart, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # 3. HISTOGRAMA (Distribución de Calor)
-        if data_points: # Reutilizamos los puntos muestreados para el histograma
-            hist_chart = alt.Chart(df_scatter).mark_bar().encode(
-                x=alt.X('LST (°C)', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
-                y=alt.Y('count()', title='Frecuencia (Píxeles)'),
-                color=alt.value('orange')
-            ).properties(
-                title="Distribución de Temperaturas en la Ciudad",
-                height=300
-            )
-            st.altair_chart(hist_chart, use_container_width=True)
+    # 1. Scatter
+    mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+    sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=30, numPixels=1000, geometries=False)
+    data = sample.getInfo()['features']
+    if data:
+        df = pd.DataFrame([x['properties'] for x in data])
+        chart = alt.Chart(df).mark_circle(size=60).encode(
+            x='NDVI_p50', y='LST_p50', color=alt.Color('LST_p50', scale=alt.Scale(scheme='turbo'))
+        ).properties(title="Correlación LST vs NDVI").interactive()
+        st.altair_chart(chart, use_container_width=True)
 
 
-# --- 7. SIDEBAR ---
+# --- 7. NUEVO PANEL: COMPARATIVA ---
+def show_comparison_panel():
+    st.markdown("### ⚖️ Comparativa de Ciudades")
+    if not connect_with_gee(): return
+
+    # 1. Selector Múltiple
+    ciudades_disp = [
+        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
+        "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
+        "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata"
+    ]
+    
+    selected = st.multiselect(
+        "Selecciona 2 ciudades para comparar:", 
+        ciudades_disp, 
+        default=st.session_state.compare_cities[:2],
+        max_selections=2
+    )
+
+    if len(selected) != 2:
+        st.info("Por favor selecciona exactamente 2 ciudades para iniciar la comparación.")
+        return
+
+    start = st.session_state.date_range[0].strftime("%Y-%m-%d")
+    end = st.session_state.date_range[1].strftime("%Y-%m-%d")
+    
+    # Contenedores de datos para graficar luego
+    stats_data = []
+    timeseries_data = []
+
+    # Layout de Mapas (Columnas)
+    c1, c2 = st.columns(2)
+    cols = [c1, c2]
+
+    for idx, city in enumerate(selected):
+        with cols[idx]:
+            st.subheader(f"📍 {city}")
+            roi = get_roi(city)
+            
+            if roi:
+                # Procesamiento Express
+                col = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+                       .filterBounds(roi).filterDate(start, end)
+                       .filter(ee.Filter.lt("CLOUD_COVER", MAX_NUBES))
+                       .map(cloudMaskFunction).map(maskThermalNoData).map(addLST))
+                
+                if col.size().getInfo() > 0:
+                    # MAPA
+                    mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
+                    lst = mosaic.select("LST_p50")
+                    
+                    # Estadísticas Globales
+                    stats = lst.reduceRegion(
+                        reducer=ee.Reducer.mean().combine(reducer2=ee.Reducer.max(), sharedInputs=True),
+                        geometry=roi, scale=100, bestEffort=True
+                    ).getInfo()
+                    
+                    stats_data.append({
+                        "Ciudad": city,
+                        "LST Promedio (°C)": stats.get("LST_p50_mean"),
+                        "LST Máxima (°C)": stats.get("LST_p50_max")
+                    })
+                    
+                    # Crear Mapa Miniatura
+                    centroid = roi.centroid().coordinates().getInfo()
+                    m = create_map(center=[centroid[1], centroid[0]])
+                    # Estandarizamos visualización para comparar peras con peras
+                    vis_params = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
+                    m.add_ee_layer(lst, vis_params, "Temperatura")
+                    
+                    # Borde
+                    empty = ee.Image().byte()
+                    outline = empty.paint(featureCollection=ee.FeatureCollection([ee.Feature(roi)]), color=1, width=2)
+                    m.add_ee_layer(outline, {'palette': 'black'}, "Límite")
+                    
+                    st_folium(m, width="100%", height=350, key=f"map_{city}")
+                    
+                    # Datos para serie de tiempo (Simplificado)
+                    def get_ts(img):
+                        mean_val = img.reduceRegion(ee.Reducer.mean(), roi, 200).get("LST")
+                        return ee.Feature(None, {'date': img.date().format("YYYY-MM-dd"), 'val': mean_val, 'city': city})
+                    
+                    ts_feats = col.map(get_ts).filter(ee.Filter.notNull(['val'])).getInfo()['features']
+                    for f in ts_feats:
+                        timeseries_data.append(f['properties'])
+
+                else:
+                    st.warning("Sin datos para este periodo.")
+            else:
+                st.error("Geometría no encontrada.")
+
+    st.markdown("---")
+    st.subheader("📊 Gráficos Comparativos")
+
+    if stats_data:
+        df_stats = pd.DataFrame(stats_data)
+        df_ts = pd.DataFrame(timeseries_data)
+        
+        gc1, gc2 = st.columns(2)
+        
+        with gc1:
+            st.markdown("**Comparativa de Temperaturas**")
+            # Transformar para gráfico agrupado
+            df_melt = df_stats.melt("Ciudad", var_name="Métrica", value_name="Temperatura")
+            
+            bar_chart = alt.Chart(df_melt).mark_bar().encode(
+                x=alt.X('Métrica', axis=None),
+                y=alt.Y('Temperatura', title='Grados Celsius'),
+                color='Métrica',
+                column='Ciudad',
+                tooltip=['Ciudad', 'Métrica', alt.Tooltip('Temperatura', format='.1f')]
+            ).properties(height=300)
+            st.altair_chart(bar_chart)
+            
+        with gc2:
+            if not df_ts.empty:
+                st.markdown("**Evolución Temporal Simultánea**")
+                df_ts['date'] = pd.to_datetime(df_ts['date'])
+                
+                line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
+                    x='date',
+                    y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
+                    color='city',
+                    tooltip=['date', 'city', 'val']
+                ).properties(height=300).interactive()
+                st.altair_chart(line_chart, use_container_width=True)
+            else:
+                st.info("No hay suficientes datos temporales para graficar.")
+
+
+# --- 8. SIDEBAR ---
 with st.sidebar:
     st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
-    st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Info"])
+    st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Comparativa", "Info"])
     
-    ciudades = [
-        "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
-        "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
-        "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata", 
-        "Jonuta", "Balancán"
-    ]
-    st.session_state.locality = st.selectbox("Ciudad", ciudades)
+    if st.session_state.window != "Comparativa":
+        ciudades = [
+            "Villahermosa", "Teapa", "Cárdenas", "Comalcalco", "Paraíso", 
+            "Frontera", "Macuspana", "Tenosique", "Huimanguillo", "Cunduacán", 
+            "Jalpa de Méndez", "Nacajuca", "Jalapa", "Tacotalpa", "Emiliano Zapata"
+        ]
+        st.session_state.locality = st.selectbox("Ciudad Principal", ciudades)
     
-    coord_ref = {"Villahermosa": (17.98, -92.92), "Teapa": (17.55, -92.95)}
-    if st.session_state.locality in coord_ref:
-        st.session_state.coordinates = coord_ref[st.session_state.locality]
-    
-    st.caption("Periodo (Sug.: Abril-Mayo)")
+    st.caption("Periodo de Análisis")
     fechas = st.date_input("Fechas", value=st.session_state.date_range)
     if len(fechas) == 2: st.session_state.date_range = fechas
     
@@ -312,10 +360,12 @@ with st.sidebar:
         st.session_state.gee_available = False
         st.rerun()
 
-# --- 8. ROUTER ---
+# --- 9. ROUTER ---
 if st.session_state.window == "Mapas":
     show_map_panel()
 elif st.session_state.window == "Gráficas":
     show_graphics_panel()
+elif st.session_state.window == "Comparativa":
+    show_comparison_panel()
 else:
-    st.markdown("### Acerca de\nPlataforma de análisis geoespacial de Islas de Calor Urbano en Tabasco.")
+    st.markdown("### Acerca de\nPlataforma integral de monitoreo térmico urbano.")
