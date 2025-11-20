@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: FINAL ESTABLE (Sin parches de instalación)
+# Versión: FINAL ESTABLE (Solo Descargas CSV - Sin PDF)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -11,8 +11,6 @@ import pandas as pd
 import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
-import base64
-from fpdf import FPDF  # Importación estándar
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -134,18 +132,6 @@ def get_roi(locality_name):
     if target.size().getInfo() > 0:
         return target.geometry()
     return None
-
-# --- CLASE PDF ---
-class PDFReport(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'Reporte de Monitoreo Termico - Tabasco Heat Watch', 0, 1, 'C')
-        self.ln(5)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
 # --- 6. PANELES PRINCIPALES ---
 
@@ -381,9 +367,9 @@ def show_comparison_panel():
                 ).properties(height=300).interactive()
                 st.altair_chart(line_chart, use_container_width=True)
 
-# --- 7. NUEVO PANEL: REPORTES Y DESCARGAS ---
+# --- 7. NUEVO PANEL: DESCARGAS (SIN PDF) ---
 def show_report_panel():
-    st.markdown(f"### 📥 Reportes y Descargas: {st.session_state.locality}")
+    st.markdown(f"### 📥 Descarga de Datos: {st.session_state.locality}")
     if not connect_with_gee(): return
     roi = get_roi(st.session_state.locality)
     if not roi: return
@@ -397,21 +383,13 @@ def show_report_panel():
             .map(cloudMaskFunction).map(maskThermalNoData).map(addLST).map(addNDVI))
 
     if col.size().getInfo() == 0:
-        st.warning("No hay datos para generar el reporte.")
+        st.warning("No hay datos para exportar.")
         return
     
-    st.info("Generando datos para exportación, por favor espera un momento...")
+    st.info("Generando archivos para exportación...")
 
-    # Calcular Estadísticas Generales
+    # Mosaico para puntos
     mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
-    lst = mosaic.select("LST_p50")
-    
-    # Estadísticas escalares
-    stats = lst.reduceRegion(
-        reducer=ee.Reducer.mean().combine(reducer2=ee.Reducer.max(), sharedInputs=True)
-        .combine(reducer2=ee.Reducer.percentile([90]), sharedInputs=True),
-        geometry=roi, scale=100, bestEffort=True
-    ).getInfo()
     
     # Datos para CSV (Serie de Tiempo)
     def get_ts_export(img):
@@ -426,8 +404,7 @@ def show_report_panel():
     ts_export = col.map(get_ts_export).filter(ee.Filter.notNull(['LST_Promedio'])).getInfo()['features']
     df_ts = pd.DataFrame([x['properties'] for x in ts_export])
 
-    # --- SECCIÓN 1: DESCARGA DE DATOS ---
-    st.markdown("#### 1. Descarga de Datos Crudos (CSV)")
+    st.markdown("#### Datos Disponibles")
     c1, c2 = st.columns(2)
     
     # CSV Serie de Tiempo
@@ -442,7 +419,6 @@ def show_report_panel():
         )
     
     # CSV Puntos de Muestreo (Para QGIS)
-    # Tomamos una muestra de 500 puntos
     sample = mosaic.select(["LST_p50", "NDVI_p50"]).sample(region=roi, scale=100, numPixels=500, geometries=True)
     data_sample = sample.getInfo()['features']
     if data_sample:
@@ -464,60 +440,11 @@ def show_report_panel():
             key='download-points'
         )
 
-    # --- SECCIÓN 2: REPORTE PDF ---
-    st.markdown("---")
-    st.markdown("#### 2. Generar Reporte Ejecutivo (PDF)")
-    
-    if st.button("📄 Generar Reporte PDF"):
-        with st.spinner("Maquetando PDF..."):
-            pdf = PDFReport()
-            pdf.add_page()
-            
-            # Títulos
-            pdf.set_font("Arial", "B", 16)
-            pdf.cell(0, 10, f"Reporte: {st.session_state.locality}", 0, 1, 'L')
-            
-            pdf.set_font("Arial", "", 12)
-            pdf.cell(0, 10, f"Periodo de Analisis: {start} al {end}", 0, 1, 'L')
-            pdf.ln(10)
-            
-            # Tabla de Estadísticas
-            pdf.set_font("Arial", "B", 14)
-            pdf.cell(0, 10, "Resumen Termico", 0, 1, 'L')
-            
-            pdf.set_font("Arial", "", 12)
-            pdf.cell(0, 10, f"- Temperatura Promedio: {stats.get('LST_p50_mean', 0):.2f} C", 0, 1)
-            pdf.cell(0, 10, f"- Temperatura Maxima Detectada: {stats.get('LST_p50_max', 0):.2f} C", 0, 1)
-            pdf.cell(0, 10, f"- Umbral de Isla de Calor (p90): {stats.get('LST_p50_p90', 0):.2f} C", 0, 1)
-            pdf.ln(10)
-            
-            # Intentar agregar mapa (Miniatura estática)
-            try:
-                vis_params = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red'], "dimensions": 500}
-                thumb_url = lst.getThumbURL(vis_params)
-                pdf.set_font("Arial", "B", 14)
-                pdf.cell(0, 10, "Mapa de Calor (Miniatura)", 0, 1, 'L')
-                pdf.image(thumb_url, x=10, y=None, w=180)
-                pdf.ln(5)
-                pdf.set_font("Arial", "I", 10)
-                pdf.cell(0, 10, "Nota: Visualizacion generada dinamicamente via Google Earth Engine.", 0, 1)
-            except Exception as e:
-                pdf.cell(0, 10, f"(No se pudo generar la vista previa del mapa: {e})", 0, 1)
-
-            # Generar descarga
-            html = create_download_link(pdf.output(dest="S").encode("latin-1"), f"Reporte_{st.session_state.locality}.pdf")
-            st.markdown(html, unsafe_allow_html=True)
-
-def create_download_link(val, filename):
-    b64 = base64.b64encode(val)  # val looks like b'...'
-    return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="{filename}">✅ Click aqui para descargar tu PDF</a>'
-
-
 # --- 8. SIDEBAR ---
 with st.sidebar:
     st.title("🔥 Tabasco Heat Watch")
     st.markdown("---")
-    st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Comparativa", "Reportes", "Info"])
+    st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Comparativa", "Descargas", "Info"])
     
     if st.session_state.window != "Comparativa":
         ciudades = [
@@ -543,7 +470,7 @@ elif st.session_state.window == "Gráficas":
     show_graphics_panel()
 elif st.session_state.window == "Comparativa":
     show_comparison_panel()
-elif st.session_state.window == "Reportes":
+elif st.session_state.window == "Descargas":
     show_report_panel()
 else:
     st.markdown("### Acerca de\nPlataforma integral de monitoreo térmico urbano.")
