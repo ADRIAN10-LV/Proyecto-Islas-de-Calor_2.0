@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
-# main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: Mapas Base (Google/Esri) + Algoritmo Robusto
+# main.py — Streamlit para Islas de Calor Urbano (ICU)
+# Versión: Mapas Base
 # --------------------------------------------------------------
 
 import streamlit as st
