@@ -1,9 +1,23 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: FINAL EXTENDIDA (Incluye Reportes PDF y Descargas)
+# Versión: FINAL CON AUTOCORRECCIÓN DE LIBRERÍAS
 # --------------------------------------------------------------
 
 import streamlit as st
+import sys
+import subprocess
+import os
+
+# --- 0. AUTOCORRECCIÓN DE INSTALACIÓN (PARCHE PARA LA NUBE) ---
+# Si Streamlit Cloud falla en leer requirements.txt, esto fuerza la instalación
+try:
+    from fpdf import FPDF
+except ImportError:
+    st.warning("Instalando librería de reportes (fpdf)... por favor espera un momento.")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "fpdf"])
+    from fpdf import FPDF
+    st.rerun() # Reinicia la app una vez instalada
+
 import ee
 import datetime as dt
 import folium
@@ -11,7 +25,6 @@ import pandas as pd
 import altair as alt
 from streamlit_folium import st_folium
 from pathlib import Path
-from fpdf import FPDF # Nueva librería para PDFs
 import base64
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
