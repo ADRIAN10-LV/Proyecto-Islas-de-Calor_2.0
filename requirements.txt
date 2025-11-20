@@ -1,8 +1,8 @@
 streamlit
+fpdf
 earthengine-api
 folium
 streamlit-folium
 python-dotenv
 pandas
 altair
-fpdf
