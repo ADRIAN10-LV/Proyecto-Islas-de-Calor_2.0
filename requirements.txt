@@ -4,3 +4,8 @@ geemap>=0.29.2
 folium>=0.14.0
 plotly>=5.15.0
 pandas>=2.1.0
+streamlit
+earthengine-api
+folium
+streamlit-folium
+python-dotenv
