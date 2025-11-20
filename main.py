@@ -468,7 +468,7 @@ def show_info_panel():
 
 # --- 9. SIDEBAR ---
 with st.sidebar:
-    st.title("🔥 Tabasco Heat Watch")
+    st.title("APLICACIÓN WEB PARA EL ANÁLISIS TÉRMICO URBANO EN TEAPA CON LANDSAT 8 USANDO PYTHON Y GOOGLE EARTH ENGINE")
     st.markdown("---")
     st.session_state.window = st.radio("Menú", ["Mapas", "Gráficas", "Comparativa", "Descargas", "Info"])
     
