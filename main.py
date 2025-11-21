@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
 # main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
-# Versión: FINAL (Selectores de Fecha Separados)
+# Versión: FINAL PULIDA (Leyendas Legibles + Explicaciones Estadísticas)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -120,6 +120,7 @@ def add_ee_layer(self, ee_object, vis_params, name):
 folium.Map.add_ee_layer = add_ee_layer
 
 def add_legend(m, title, colors, vmin, vmax):
+    """Agrega leyenda flotante con texto NEGRO forzado para visibilidad"""
     css_gradient = f"linear-gradient(to right, {', '.join(colors)})"
     template = f"""
     {{% macro html(this, kwargs) %}}
@@ -127,14 +128,15 @@ def add_legend(m, title, colors, vmin, vmax):
         position: fixed; 
         bottom: 50px; left: 50px; width: 250px; height: 85px; 
         z-index:9999; font-size:14px;
-        background-color: rgba(255, 255, 255, 0.85);
+        background-color: rgba(255, 255, 255, 0.9);
+        color: #000000; /* FORZAR TEXTO NEGRO */
         padding: 10px;
         border-radius: 6px;
         border: 1px solid #ccc;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
         ">
         <div style="font-weight: bold; margin-bottom: 5px;">{title}</div>
-        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #aaa;"></div>
+        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #888;"></div>
         <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px;">
             <span>{vmin}</span>
             <span>{vmax}</span>
@@ -191,7 +193,7 @@ def show_map_panel():
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
-            # Escala ajustada a 55°C para mejor visualización
+            # Escala calibrada
             viz_lst = {"min": 25, "max": 55, "palette": ['blue', 'cyan', 'yellow', 'orange', 'red', 'maroon']}
             m.add_ee_layer(lst_band, viz_lst, "1. LST (°C)")
             add_legend(m, "Temperatura LST (°C)", viz_lst['palette'], viz_lst['min'], viz_lst['max'])
@@ -280,6 +282,11 @@ def show_graphics_panel():
                 tooltip=['NDVI_p50', 'LST_p50']
             ).properties(height=350).interactive()
             st.altair_chart(chart, use_container_width=True)
+            
+            # --- RESULTADOS RESTAURADOS ---
+            # Calcular correlación
+            corr = df['LST_p50'].corr(df['NDVI_p50'])
+            st.info(f"📉 **Coeficiente de Correlación:** {corr:.2f}. (Un valor negativo indica que a mayor vegetación, menor temperatura).")
             
             st.markdown("#### 2. Distribución de Temperaturas")
             hist = alt.Chart(df).mark_bar().encode(
@@ -525,7 +532,6 @@ with st.sidebar:
     
     st.markdown("### Periodo de Análisis")
     
-    # Lógica de fechas separadas
     col_dates1, col_dates2 = st.columns(2)
     
     start_val = st.session_state.date_range[0]
