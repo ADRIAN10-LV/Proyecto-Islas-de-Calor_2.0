@@ -1,5 +1,6 @@
 # --------------------------------------------------------------
-
+# main.py — Dashboard Streamlit para Islas de Calor Urbano (ICU)
+# Versión: FINAL PULIDA (Leyendas Legibles + Explicaciones Estadísticas)
 # --------------------------------------------------------------
 
 import streamlit as st
@@ -15,7 +16,7 @@ from branca.element import Template, MacroElement
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Islas de calor Tabasco",
-    page_icon="",
+    page_icon="🗺️",
     layout="wide",
 )
 
@@ -119,6 +120,7 @@ def add_ee_layer(self, ee_object, vis_params, name):
 folium.Map.add_ee_layer = add_ee_layer
 
 def add_legend(m, title, colors, vmin, vmax):
+    """Agrega leyenda flotante con texto NEGRO forzado para visibilidad"""
     css_gradient = f"linear-gradient(to right, {', '.join(colors)})"
     template = f"""
     {{% macro html(this, kwargs) %}}
@@ -126,14 +128,15 @@ def add_legend(m, title, colors, vmin, vmax):
         position: fixed; 
         bottom: 50px; left: 50px; width: 250px; height: 85px; 
         z-index:9999; font-size:14px;
-        background-color: rgba(255, 255, 255, 0.85);
+        background-color: rgba(255, 255, 255, 0.9);
+        color: #000000; /* FORZAR TEXTO NEGRO */
         padding: 10px;
         border-radius: 6px;
         border: 1px solid #ccc;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
         ">
         <div style="font-weight: bold; margin-bottom: 5px;">{title}</div>
-        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #aaa;"></div>
+        <div style="width: 100%; height: 15px; background: {css_gradient}; border: 1px solid #888;"></div>
         <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 12px;">
             <span>{vmin}</span>
             <span>{vmax}</span>
@@ -162,7 +165,7 @@ def get_roi(locality_name):
 # --- 6. PANELES PRINCIPALES ---
 
 def show_map_panel():
-    st.markdown(f"### Proyecto de Residencia: Islas de Calor {st.session_state.locality}")
+    st.markdown(f"### 🗺️ Monitor Urbano: {st.session_state.locality}")
     if not connect_with_gee(): return
     
     roi = get_roi(st.session_state.locality)
@@ -588,7 +591,8 @@ match st.session_state.window:
             lst_band = mosaic.select("LST_p50")
             ndvi_band = mosaic.select("NDVI_p50")
             
-            viz_lst = {"min": 28, "max": 45, "palette": ['blue', 'cyan', 'yellow', 'red']}
+            # Escala calibrada
+            viz_lst = {"min": 25, "max": 55, "palette": ['blue', 'cyan', 'yellow', 'orange', 'red', 'maroon']}
             m.add_ee_layer(lst_band, viz_lst, "1. LST (°C)")
             add_legend(m, "Temperatura LST (°C)", viz_lst['palette'], viz_lst['min'], viz_lst['max'])
             
@@ -599,7 +603,7 @@ match st.session_state.window:
                 p90_val_info = p90.getInfo()
                 uhi = lst_band.gte(val_p90)
                 uhi_clean = uhi.updateMask(uhi.connectedPixelCount(100, True).gte(3)).selfMask()
-                m.add_ee_layer(uhi_clean, {"palette": ['#d7301f']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
+                m.add_ee_layer(uhi_clean, {"palette": ['#000000']}, f"2. Hotspots (> {p90_val_info:.1f}°C)")
             
             m.add_ee_layer(ndvi_band, {"min": 0, "max": 0.6, "palette": ['brown', 'white', 'green']}, "3. NDVI")
             
@@ -677,6 +681,11 @@ def show_graphics_panel():
             ).properties(height=350).interactive()
             st.altair_chart(chart, use_container_width=True)
             
+            # --- RESULTADOS RESTAURADOS ---
+            # Calcular correlación
+            corr = df['LST_p50'].corr(df['NDVI_p50'])
+            st.info(f"📉 **Coeficiente de Correlación:** {corr:.2f}. (Un valor negativo indica que a mayor vegetación, menor temperatura).")
+            
             st.markdown("#### 2. Distribución de Temperaturas")
             hist = alt.Chart(df).mark_bar().encode(
                 x=alt.X('LST_p50', bin=alt.Bin(maxbins=20), title='Rango de Temperatura'),
@@ -699,8 +708,8 @@ def show_graphics_panel():
             df_ts['date'] = pd.to_datetime(df_ts['date'])
             
             line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
-                x=alt.X('date', title='Fecha', axis=alt.Axis(format='%Y-%m-%d')),
-                y=alt.Y('LST_mean', title='Temperatura Promedio (°C)', scale=alt.Scale(zero=False)),
+                x=alt.X('date', title='Fecha de Captura', axis=alt.Axis(format='%Y-%m-%d')),
+                y=alt.Y('LST_mean', title='LST Promedio de la Ciudad (°C)', scale=alt.Scale(zero=False)),
                 tooltip=[alt.Tooltip('date', format='%Y-%m-%d'), alt.Tooltip('LST_mean', format='.1f')]
             ).properties(height=350).interactive()
             st.altair_chart(line_chart, use_container_width=True)
@@ -766,7 +775,7 @@ def show_comparison_panel():
                     
                     centroid = roi.centroid().coordinates().getInfo()
                     m = create_map(center=[centroid[1], centroid[0]], height=350)
-                    viz = {"min": 28, "max": 42, "palette": ['blue', 'cyan', 'yellow', 'red']}
+                    viz = {"min": 25, "max": 55, "palette": ['blue', 'cyan', 'yellow', 'orange', 'red', 'maroon']}
                     m.add_ee_layer(lst, viz, "Temperatura")
                     add_legend(m, f"LST {city}", viz['palette'], viz['min'], viz['max'])
                     
@@ -812,8 +821,8 @@ def show_comparison_panel():
             st.markdown("##### 2. Evolución Temporal Simultánea")
             df_ts['date'] = pd.to_datetime(df_ts['date'])
             line_chart = alt.Chart(df_ts).mark_line(point=True).encode(
-                x=alt.X('date', title='Fecha'),
-                y=alt.Y('val', title='LST Promedio (°C)', scale=alt.Scale(zero=False)),
+                x=alt.X('date', title='Fecha de Captura'),
+                y=alt.Y('val', title='LST Promedio de la Ciudad (°C)', scale=alt.Scale(zero=False)),
                 color='city',
                 tooltip=['date', 'city', 'val']
             ).properties(height=400).interactive()
@@ -838,7 +847,7 @@ def show_report_panel():
         st.warning("No hay datos para exportar.")
         return
     
-    st.info("Generando archivos...")
+    st.info("Generando archivos para exportación...")
 
     mosaic = col.reduce(ee.Reducer.percentile([50])).clip(roi)
     
@@ -919,9 +928,31 @@ with st.sidebar:
         ]
         st.session_state.locality = st.selectbox("Ciudad Principal", ciudades)
     
-    st.caption("Periodo de Análisis")
-    fechas = st.date_input("Fechas", value=st.session_state.date_range)
-    if len(fechas) == 2: st.session_state.date_range = fechas
+    st.markdown("### Periodo de Análisis")
+    
+    col_dates1, col_dates2 = st.columns(2)
+    
+    start_val = st.session_state.date_range[0]
+    end_val = st.session_state.date_range[1]
+    
+    with col_dates1:
+        new_start = st.date_input(
+            "Fecha Inicial",
+            value=start_val,
+            max_value=dt.date.today(),
+            format="DD/MM/YYYY"
+        )
+    
+    with col_dates2:
+        new_end = st.date_input(
+            "Fecha Final",
+            value=end_val,
+            min_value=new_start,
+            max_value=dt.date.today(),
+            format="DD/MM/YYYY"
+        )
+    
+    st.session_state.date_range = (new_start, new_end)
     
     st.markdown("---")
     if st.button("🔄 Recargar"):
